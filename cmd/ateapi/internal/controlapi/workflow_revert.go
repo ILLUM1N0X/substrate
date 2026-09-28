@@ -24,7 +24,6 @@ import (
 
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store"
 	"github.com/agent-substrate/substrate/internal/ateattr"
-	"github.com/agent-substrate/substrate/internal/objectstore"
 	"github.com/agent-substrate/substrate/internal/resources"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"go.opentelemetry.io/otel/attribute"
@@ -210,7 +209,7 @@ func (w *ActorWorkflow) ensureInProgressSnapshotDiscarded(ctx context.Context, a
 
 	inProgress := actor.GetStatus().GetInProgressSnapshotUri()
 	switch {
-	case w.objectStore == nil:
+	case w.snapshotPlugin == nil:
 		markSkipped(ctx, "no object store configured")
 		return nil
 	case inProgress == "":
@@ -231,7 +230,7 @@ func (w *ActorWorkflow) ensureInProgressSnapshotDiscarded(ctx context.Context, a
 	}
 	// Only the abandoned snapshot goes, not the actor's whole prefix: the
 	// external snapshot the revert returns the actor to lives under it too.
-	return objectstore.DeletePrefix(ctx, w.objectStore, uri.Prefix())
+	return w.cleanupSnapshot(ctx, uri.Prefix())
 }
 
 // ensureRevertedFinalized commits SUSPENDED and drops every pointer to the

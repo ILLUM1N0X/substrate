@@ -17,6 +17,7 @@ package controlapi
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store"
@@ -405,6 +406,13 @@ func TestEnsureSuspendedFinalized_ReleasesReplacedSnapshot(t *testing.T) {
 // errObjectStore stands in for object storage being unreachable.
 var errObjectStore = errors.New("object storage is unavailable")
 
+// isObjectStoreErr reports whether err came from errObjectStore. The object
+// store sits behind the snapshot plugin's gRPC boundary, which carries the
+// message but not the error value, so errors.Is cannot match it.
+func isObjectStoreErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), errObjectStore.Error())
+}
+
 // TestEnsureSuspendedFinalized_RetriesAfterObjectStoreFailure verifies a suspend
 // that dies collecting the snapshot it replaced leaves the actor exactly where a
 // retry picks it up — SUSPENDING, still naming the snapshot it was replacing —
@@ -434,7 +442,7 @@ func TestEnsureSuspendedFinalized_RetriesAfterObjectStoreFailure(t *testing.T) {
 	})
 
 	objects.OnDelete = func(string, string) error { return errObjectStore }
-	if _, err := w.ensureSuspendedFinalized(ctx, actorRef, template); !errors.Is(err, errObjectStore) {
+	if _, err := w.ensureSuspendedFinalized(ctx, actorRef, template); !isObjectStoreErr(err) {
 		t.Fatalf("ensureSuspendedFinalized = %v, want an error wrapping %v", err, errObjectStore)
 	}
 	stuck, err := persistence.GetActor(ctx, actorRef)

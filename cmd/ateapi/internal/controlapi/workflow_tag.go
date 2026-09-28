@@ -20,7 +20,6 @@ import (
 	"fmt"
 
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store"
-	"github.com/agent-substrate/substrate/internal/objectstore"
 	"github.com/agent-substrate/substrate/internal/resources"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc/codes"
@@ -156,7 +155,7 @@ func (w *ActorWorkflow) ensureTagSnapshotReleased(ctx context.Context, tag *atea
 	ctx, done := stepSpan(ctx, "ReleaseTagSnapshot")
 	defer func() { err = done(err) }()
 
-	if w.objectStore == nil {
+	if w.snapshotPlugin == nil {
 		markSkipped(ctx, "no object store configured")
 		return nil
 	}
@@ -165,7 +164,7 @@ func (w *ActorWorkflow) ensureTagSnapshotReleased(ctx context.Context, tag *atea
 	if err != nil {
 		return fmt.Errorf("while resolving the external snapshot of tag %s: %w", tagRef, err)
 	}
-	if err := objectstore.DeletePrefix(ctx, w.objectStore, uri.Prefix()); err != nil {
+	if err := w.cleanupSnapshot(ctx, uri.Prefix()); err != nil {
 		return fmt.Errorf("while releasing the external snapshot %q of tag %s: %w", uri, tagRef, err)
 	}
 	return nil
@@ -275,7 +274,7 @@ func (w *ActorWorkflow) ensureTagSnapshotCopied(ctx context.Context, tag *ateapi
 	ctx, done := stepSpan(ctx, "CopyTagSnapshot")
 	defer func() { err = done(err) }()
 
-	if w.objectStore == nil {
+	if w.snapshotPlugin == nil {
 		markSkipped(ctx, "no object store configured")
 		return nil
 	}
@@ -284,7 +283,7 @@ func (w *ActorWorkflow) ensureTagSnapshotCopied(ctx context.Context, tag *ateapi
 	if err != nil {
 		return fmt.Errorf("while parsing the external snapshot %q of the source actor: %w", snapshot.GetSnapshotUri(), err)
 	}
-	if err := objectstore.CopyPrefix(ctx, w.objectStore, src.Prefix(), dst.Prefix()); err != nil {
+	if err := w.copySnapshot(ctx, src.Prefix(), dst.Prefix()); err != nil {
 		return fmt.Errorf("while copying the external snapshot for tag %s: %w", tagRef, err)
 	}
 	return nil
