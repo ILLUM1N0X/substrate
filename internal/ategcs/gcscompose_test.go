@@ -32,7 +32,7 @@ import (
 // client honors STORAGE_EMULATOR_HOST, so:
 //
 //	docker run -d -p 4443:4443 fsouza/fake-gcs-server -scheme http -public-host localhost:4443
-//	STORAGE_EMULATOR_HOST=localhost:4443 go test ./cmd/atelet/internal/ategcs -run Composite
+//	STORAGE_EMULATOR_HOST=localhost:4443 go test ./internal/ategcs -run Composite
 func emulatorClient(t *testing.T) (*storage.Client, string) {
 	t.Helper()
 	if os.Getenv("STORAGE_EMULATOR_HOST") == "" {
