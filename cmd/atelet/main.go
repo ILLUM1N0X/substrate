@@ -50,6 +50,7 @@ import (
 	"github.com/agent-substrate/substrate/internal/proto/ateompb"
 	"github.com/agent-substrate/substrate/internal/resources"
 	"github.com/agent-substrate/substrate/internal/serverboot"
+	"github.com/agent-substrate/substrate/internal/snapshotplugin/objectstoreplugin"
 	"github.com/agent-substrate/substrate/internal/substratex509"
 	"github.com/agent-substrate/substrate/internal/version"
 	"github.com/agent-substrate/substrate/internal/volume"
@@ -58,6 +59,7 @@ import (
 	"github.com/agent-substrate/substrate/pkg/client/informers/externalversions"
 	listersv1alpha1 "github.com/agent-substrate/substrate/pkg/client/listers/api/v1alpha1"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
+	"github.com/agent-substrate/substrate/pkg/proto/snapshotpluginpb"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -108,6 +110,8 @@ var (
 
 	drainDelay   = pflag.Duration("drain-delay", 0, "How long to keep accepting new RPCs after SIGTERM before starting the gRPC drain.")
 	drainTimeout = pflag.Duration("drain-timeout", 5*time.Minute, "Deadline for the graceful gRPC drain on shutdown. In-flight RPCs still running past it are forcefully cancelled.")
+
+	snapshotPluginSocket = pflag.String("snapshot-plugin-socket", "/run/snapshot-plugin/node.sock", "Unix socket of the node snapshot plugin that external snapshots are fetched and uploaded through.")
 )
 
 func main() {
@@ -286,11 +290,18 @@ func main() {
 	ateFactory.WaitForCacheSync(stopCh)
 	clusterTrustBundleInformerFactory.WaitForCacheSync(stopCh)
 
+	snapshotPluginConn, err := objectstoreplugin.Dial(*snapshotPluginSocket)
+	if err != nil {
+		serverboot.Fatal(ctx, "Failed to set up the snapshot plugin client", err)
+	}
+	defer snapshotPluginConn.Close()
+
 	wmService := NewService(
 		ctx,
 		ateomDialer,
 		wrappedAnonGCS,
 		wrappedGCS,
+		snapshotpluginpb.NewNodeProviderPluginClient(snapshotPluginConn),
 		imageCache,
 		instruments,
 		volPlugins,
@@ -432,10 +443,16 @@ func drainOnShutdown(ctx context.Context, srv *grpc.Server, readiness *serverboo
 type AteomHerder struct {
 	ateletpb.UnimplementedAteomHerderServer
 
-	ateomDialer           *AteomDialer
-	imageCache            *imagecache.Store
-	anonGCSClient         ategcs.ObjectStorage
-	gcsClient             ategcs.ObjectStorage
+	ateomDialer   *AteomDialer
+	imageCache    *imagecache.Store
+	anonGCSClient ategcs.ObjectStorage
+	// gcsClient reads sandbox assets. Snapshots go through snapshots.
+	gcsClient ategcs.ObjectStorage
+	// snapshots moves external snapshot files between the node and storage.
+	snapshots snapshotpluginpb.NodeProviderPluginClient
+	// snapshotScratchDir holds short-lived manifest directories; it must be
+	// inside the node plugin's root.
+	snapshotScratchDir    string
 	instruments           *Instruments
 	mu                    sync.RWMutex
 	volumePlugins         map[string]volume.VolumePluginWorkerPlane
@@ -451,6 +468,7 @@ func NewService(
 	ateomDialer *AteomDialer,
 	anonGCSClient ategcs.ObjectStorage,
 	gcsClient ategcs.ObjectStorage,
+	snapshots snapshotpluginpb.NodeProviderPluginClient,
 	imageCache *imagecache.Store,
 	instruments *Instruments,
 	volumePlugins map[string]volume.VolumePluginWorkerPlane,
@@ -462,6 +480,8 @@ func NewService(
 		imageCache:            imageCache,
 		anonGCSClient:         anonGCSClient,
 		gcsClient:             gcsClient,
+		snapshots:             snapshots,
+		snapshotScratchDir:    ateletpath.SnapshotScratchDir,
 		instruments:           instruments,
 		volumePlugins:         volumePlugins,
 		csiDriverConfigLister: csiDriverConfigLister,
@@ -828,12 +848,12 @@ func (s *AteomHerder) uploadExternalCheckpoint(ctx context.Context, req *ateletp
 	return s.uploadSnapshot(ctx, uri, checkpointDir, rec, req.GetActorTemplateAtespace(), req.GetActorTemplateName())
 }
 
-// uploadSnapshot uploads rec's snapshot files from srcDir to uri (each
-// zstd-compressed, concurrently), then the marshaled manifest. The manifest
-// goes last, never in parallel: its presence is the commit marker — readers
-// assume every file it lists is already present. A crash mid-upload thus
-// leaves only orphaned files, never a manifest pointing at files that never
-// landed; retries overwrite the deterministic object names.
+// uploadSnapshot uploads rec's snapshot files from srcDir to uri through the
+// snapshot plugin, then the marshaled manifest. The manifest goes last, in its
+// own call: its presence is the commit marker — readers assume every file it
+// lists is already present. A crash mid-upload thus leaves only orphaned
+// files, never a manifest pointing at files that never landed; retries
+// overwrite the deterministic object names.
 func (s *AteomHerder) uploadSnapshot(ctx context.Context, uri resources.SnapshotURI, srcDir string, rec *sandboxAssetsRecord, templateAtespace, templateName string) error {
 	root, err := os.OpenRoot(srcDir)
 	if err != nil {
@@ -841,46 +861,22 @@ func (s *AteomHerder) uploadSnapshot(ctx context.Context, uri resources.Snapshot
 	}
 	defer root.Close()
 
-	g, gCtx := errgroup.WithContext(ctx)
 	for _, fileName := range rec.SnapshotFiles {
-		g.Go(func() error {
-			local, err := root.Open(fileName)
-			if err != nil {
-				return fmt.Errorf("while opening %s in snapshot directory: %w", fileName, err)
-			}
-			defer local.Close()
-			info, err := local.Stat()
-			if err != nil {
-				return fmt.Errorf("while inspecting %s in snapshot directory: %w", fileName, err)
-			}
-			if !info.Mode().IsRegular() {
-				return fmt.Errorf("snapshot file %s is not a regular file", fileName)
-			}
-			recordSnapshotSize(ctx, fileName, info.Size(), templateAtespace, templateName)
-
-			objectURI, err := uri.ObjectURI(fileName + ".zstd")
-			if err != nil {
-				return fmt.Errorf("while addressing %s in GCS: %w", fileName, err)
-			}
-			if err := ategcs.SendFileToGCSWithZstd(gCtx, s.gcsClient, objectURI, local); err != nil {
-				return fmt.Errorf("while uploading %s to GCS: %w", fileName, err)
-			}
-			return nil
-		})
+		info, err := root.Lstat(fileName)
+		if err != nil {
+			return fmt.Errorf("while inspecting %s in snapshot directory: %w", fileName, err)
+		}
+		recordSnapshotSize(ctx, fileName, info.Size(), templateAtespace, templateName)
 	}
-	if err := g.Wait(); err != nil {
-		return err
+	if err := s.uploadSnapshotFiles(ctx, uri.String(), srcDir, rec.SnapshotFiles); err != nil {
+		return fmt.Errorf("while uploading snapshot files: %w", err)
 	}
 
 	manifest, err := json.Marshal(rec)
 	if err != nil {
 		return fmt.Errorf("while marshaling snapshot manifest: %w", err)
 	}
-	manifestURI, err := uri.ObjectURI(sandboxManifestName)
-	if err != nil {
-		return fmt.Errorf("while addressing snapshot manifest in GCS: %w", err)
-	}
-	if err := ategcs.SendBytesToGCS(ctx, s.gcsClient, manifestURI, manifest); err != nil {
+	if err := s.uploadManifest(ctx, uri.String(), manifest); err != nil {
 		return fmt.Errorf("while uploading snapshot manifest: %w", err)
 	}
 	return nil
@@ -939,11 +935,6 @@ func (s *AteomHerder) UploadPausedCheckpoint(ctx context.Context, req *ateletpb.
 // returns the sandbox class recorded in the snapshot manifest (empty when the
 // manifest was not read). Parameterized by localDir for tests.
 func (s *AteomHerder) uploadLocalCheckpointDir(ctx context.Context, req *ateletpb.UploadPausedCheckpointRequest, localDir string, uri resources.SnapshotURI) (string, error) {
-	manifestURI, err := uri.ObjectURI(sandboxManifestName)
-	if err != nil {
-		return "", fmt.Errorf("while addressing snapshot manifest in GCS: %w", err)
-	}
-
 	manifest, err := readSnapshotManifest(localDir)
 	if errors.Is(err, os.ErrNotExist) {
 		// The local snapshot is gone. A previous invocation may have uploaded
@@ -951,12 +942,12 @@ func (s *AteomHerder) uploadLocalCheckpointDir(ctx context.Context, req *ateletp
 		// means the whole snapshot is committed and this retry already
 		// succeeded. Absent on both sides, the paused actor's state is
 		// unrecoverable.
-		_, fetchErr := ategcs.FetchFromGCS(ctx, s.gcsClient, manifestURI)
+		_, fetchErr := s.fetchManifest(ctx, uri.String())
 		if fetchErr == nil {
 			slog.InfoContext(ctx, "Local snapshot already uploaded and pruned; nothing to do", slog.String("snapshot_uri", req.GetDestinationSnapshotUri()))
 			return "", nil
 		}
-		if errors.Is(fetchErr, ategcs.ErrObjectNotFound) {
+		if status.Code(fetchErr) == codes.NotFound {
 			return "", fmt.Errorf("local snapshot %q is gone and no uploaded copy exists: %w",
 				req.GetLocalSnapshotName(), fetchErr)
 		}
@@ -1104,15 +1095,7 @@ func (s *AteomHerder) Restore(ctx context.Context, req *ateletpb.RestoreRequest)
 	var sandboxRec *sandboxAssetsRecord
 	switch req.GetType() {
 	case ateletpb.CheckpointType_CHECKPOINT_TYPE_EXTERNAL:
-		uri, err := resources.ParseSnapshotURI(req.GetExternalConfig().GetSnapshotUri())
-		if err != nil {
-			return nil, err
-		}
-		manifestURI, err := uri.ObjectURI(sandboxManifestName)
-		if err != nil {
-			return nil, err
-		}
-		manifest, err := ategcs.FetchFromGCS(ctx, s.gcsClient, manifestURI)
+		manifest, err := s.fetchManifest(ctx, req.GetExternalConfig().GetSnapshotUri())
 		if err != nil {
 			return nil, fmt.Errorf("while fetching snapshot manifest: %w", err)
 		}
@@ -1137,15 +1120,7 @@ func (s *AteomHerder) Restore(ctx context.Context, req *ateletpb.RestoreRequest)
 	baseCfg := req.GetBaseConfig()
 	var goldenRec *sandboxAssetsRecord
 	if req.GetScope() == ateletpb.SnapshotScope_SNAPSHOT_SCOPE_DATA_ON_GOLDEN {
-		goldenURI, err := resources.ParseSnapshotURI(baseCfg.GetSnapshotUri())
-		if err != nil {
-			return nil, err
-		}
-		manifestURI, err := goldenURI.ObjectURI(sandboxManifestName)
-		if err != nil {
-			return nil, err
-		}
-		manifest, err := ategcs.FetchFromGCS(ctx, s.gcsClient, manifestURI)
+		manifest, err := s.fetchManifest(ctx, baseCfg.GetSnapshotUri())
 		if err != nil {
 			return nil, fmt.Errorf("while fetching golden snapshot manifest: %w", err)
 		}
@@ -1503,40 +1478,9 @@ func (s *AteomHerder) downloadCombinedCheckpoint(ctx context.Context, actorURI, 
 }
 
 func (s *AteomHerder) downloadExternalCheckpoint(ctx context.Context, snapshotURI string, dstDir string, files []string) error {
-	uri, err := resources.ParseSnapshotURI(snapshotURI)
-	if err != nil {
-		return err
+	if err := s.fetchSnapshotFiles(ctx, snapshotURI, dstDir, files); err != nil {
+		return fmt.Errorf("while downloading snapshot files: %w", err)
 	}
-	root, err := os.OpenRoot(dstDir)
-	if err != nil {
-		return fmt.Errorf("while opening restore directory: %w", err)
-	}
-	defer root.Close()
-
-	g, gCtx := errgroup.WithContext(ctx)
-	for _, fileName := range files {
-		fileName := fileName
-		g.Go(func() error {
-			objectURI, err := uri.ObjectURI(fileName + ".zstd")
-			if err != nil {
-				return fmt.Errorf("while addressing %s in GCS: %w", fileName, err)
-			}
-			local, err := root.OpenFile(fileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-			if err != nil {
-				return fmt.Errorf("while opening %s in restore directory: %w", fileName, err)
-			}
-			fetchErr := ategcs.FetchFileFromGCSWithZstd(gCtx, s.gcsClient, objectURI, local)
-			closeErr := local.Close()
-			if err := errors.Join(fetchErr, closeErr); err != nil {
-				return fmt.Errorf("while downloading %s from GCS: %w", fileName, err)
-			}
-			return nil
-		})
-	}
-	if err := g.Wait(); err != nil {
-		return err
-	}
-
 	return nil
 }
 
