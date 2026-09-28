@@ -83,6 +83,29 @@ spec:
       # the readinessProbe below reaching NotReady, plus propagation) +
       # --drain-timeout.
       terminationGracePeriodSeconds: 40
+      # The server snapshot plugin deletes and copies external snapshots for
+      # ate-api-server, over a Unix socket in a pod-local emptyDir. A native
+      # sidecar starts before ate-api-server and stops after it.
+      initContainers:
+      - name: snapshot-plugin
+        image: ko://github.com/agent-substrate/substrate/cmd/snapshot-plugin
+        restartPolicy: Always
+        args:
+        - server
+        - --socket=/run/snapshot-plugin/server.sock
+        securityContext:
+          capabilities:
+            drop:
+            - ALL
+        env:
+        - name: ATE_STORAGE_BACKEND
+          value: "gcs"
+        envFrom:
+        - configMapRef:
+            name: ate-otel-config
+        volumeMounts:
+        - name: snapshot-plugin
+          mountPath: /run/snapshot-plugin
       containers:
       - name: ate-api-server
         image: ko://github.com/agent-substrate/substrate/cmd/ateapi
@@ -104,6 +127,7 @@ spec:
           # Graceful shutdown knobs. The sum must fit within terminationGracePeriodSeconds.
           - --drain-delay=13s
           - --drain-timeout=15s
+          - --snapshot-plugin-socket=/run/snapshot-plugin/server.sock
         env:
         - name: POD_NAME
           valueFrom:
@@ -144,6 +168,8 @@ spec:
             name: ate-api-server-secret-envvars
             optional: true
         volumeMounts:
+        - name: snapshot-plugin
+          mountPath: /run/snapshot-plugin
         # servicedns: the apiserver's own gRPC serving cert (DNS SAN api.ate-system.svc).
         - name: "servicedns"
           mountPath: "/run/servicedns.podcert.ate.dev"
@@ -205,6 +231,8 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 10
       volumes:
+      - name: snapshot-plugin
+        emptyDir: {}
       - name: "servicedns"
         projected:
           sources:
