@@ -17,6 +17,7 @@ package controlapi
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store"
@@ -24,6 +25,7 @@ import (
 	"github.com/agent-substrate/substrate/internal/installdefaults"
 	"github.com/agent-substrate/substrate/internal/objectstore/objectstoretest"
 	"github.com/agent-substrate/substrate/internal/resources"
+	"github.com/agent-substrate/substrate/internal/snapshotplugin/objectstoreplugin"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -406,6 +408,13 @@ func TestEnsureSuspendedFinalized_ReleasesReplacedSnapshot(t *testing.T) {
 // errObjectStore stands in for object storage being unreachable.
 var errObjectStore = errors.New("object storage is unavailable")
 
+// isObjectStoreErr reports whether err came from errObjectStore. The object
+// store sits behind the snapshot plugin's gRPC boundary, which carries the
+// message but not the error value, so errors.Is cannot match it.
+func isObjectStoreErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), errObjectStore.Error())
+}
+
 // TestEnsureSuspendedFinalized_CommitsDespiteObjectStoreFailure verifies that
 // failing to collect the snapshot a suspend replaced does not fail the
 // suspend. The worker is already released by then, so aborting would leave the
@@ -483,7 +492,7 @@ func TestEnsureSuspendedFinalized_KeepsReplacedSnapshotOnConflict(t *testing.T) 
 		s.ExternalSnapshot = &ateapipb.ExternalSnapshot{SnapshotUri: previous.String()}
 	})
 
-	w := &ActorWorkflow{store: &conflictingUpdateStore{Interface: persistence}, objectStore: objects}
+	w := &ActorWorkflow{store: &conflictingUpdateStore{Interface: persistence}, snapshotPlugin: objectstoreplugin.ServerClient(objects)}
 	if _, err := w.ensureSuspendedFinalized(ctx, actorRef, template); status.Code(err) != codes.Aborted {
 		t.Fatalf("ensureSuspendedFinalized = %v, want code Aborted", err)
 	}

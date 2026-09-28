@@ -27,7 +27,6 @@ import (
 	"syscall"
 	"time"
 
-	"cloud.google.com/go/storage"
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/apiauthn"
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/authz"
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/controlapi"
@@ -40,16 +39,15 @@ import (
 	"github.com/agent-substrate/substrate/internal/installdefaults"
 	"github.com/agent-substrate/substrate/internal/localca"
 	"github.com/agent-substrate/substrate/internal/localjwtauthority"
-	"github.com/agent-substrate/substrate/internal/objectstore"
 	"github.com/agent-substrate/substrate/internal/oidcdiscovery"
 	"github.com/agent-substrate/substrate/internal/serverboot"
+	"github.com/agent-substrate/substrate/internal/snapshotplugin/objectstoreplugin"
 	"github.com/agent-substrate/substrate/internal/version"
 	"github.com/agent-substrate/substrate/internal/volume"
 	"github.com/agent-substrate/substrate/pkg/client/clientset/versioned"
 	"github.com/agent-substrate/substrate/pkg/client/informers/externalversions"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/agent-substrate/substrate/pkg/proto/snapshotpluginpb"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/pflag"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -89,6 +87,8 @@ var (
 
 	drainDelay   = pflag.Duration("drain-delay", 13*time.Second, "How long to keep accepting new work after SIGTERM, before starting the gRPC drain.")
 	drainTimeout = pflag.Duration("drain-timeout", 15*time.Second, "Deadline for the graceful gRPC drain on shutdown. In-flight RPCs still running past it are forcefully cancelled.")
+
+	snapshotPluginSocket = pflag.String("snapshot-plugin-socket", "/run/snapshot-plugin/server.sock", "Unix socket of the server snapshot plugin that external snapshots are deleted and copied through.")
 
 	templateResyncInterval = pflag.Duration("template-resync-interval", 20*time.Second, fmt.Sprintf("Interval between actor template resyncs. Must be at least %s.", minResyncInterval))
 
@@ -245,10 +245,11 @@ func main() {
 		serverboot.Fatal(ctx, "Failed to create metric instruments", err)
 	}
 
-	objectStore, err := newObjectStore(ctx)
+	snapshotPluginConn, err := objectstoreplugin.Dial(*snapshotPluginSocket)
 	if err != nil {
-		serverboot.Fatal(ctx, "Failed to set up the object storage backend", err)
+		serverboot.Fatal(ctx, "Failed to set up the snapshot plugin client", err)
 	}
+	defer snapshotPluginConn.Close()
 
 	volPlugins := make(map[string]volume.VolumePluginControlPlane)
 	ateletDialer := controlapi.NewAteletDialer(ateletPodInformer.GetIndexer(), ateletSPIFFEID, *ateletClientCredBundle, *podIdentityCACerts)
@@ -273,7 +274,7 @@ func main() {
 		instruments,
 		*defaultEgressGatewayAddress,
 		volPlugins,
-		objectStore,
+		snapshotpluginpb.NewServerProviderPluginClient(snapshotPluginConn),
 		resolvedActorJWTIssuer,
 		actorIDJWTAuthorityPool,
 		actorIDCAPool,
@@ -403,35 +404,6 @@ func logFlagValues(ctx context.Context) {
 		slog.Duration("drain-delay", *drainDelay),
 		slog.Duration("drain-timeout", *drainTimeout),
 	)
-}
-
-// newObjectStore builds the client ate-api manages external snapshots with.
-// The backend is selected the same way atelet selects the one it reads and
-// writes snapshots through, so both ends of a snapshot's life agree on where
-// it lives.
-func newObjectStore(ctx context.Context) (objectstore.Store, error) {
-	switch backend := os.Getenv("ATE_STORAGE_BACKEND"); backend {
-	case "s3":
-		slog.InfoContext(ctx, "Using S3 storage backend")
-		// Depends on the standard AWS environment variables, which have to be
-		// set on the ate-api pod.
-		cfg, err := config.LoadDefaultConfig(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("loading S3 config: %w", err)
-		}
-		return objectstore.NewS3(s3.NewFromConfig(cfg, func(o *s3.Options) {
-			if os.Getenv("AWS_S3_USE_PATH_STYLE") == "true" {
-				o.UsePathStyle = true
-			}
-		})), nil
-	// GCS is currently the default, TODO: we assume workload identity / ADC
-	default:
-		client, err := storage.NewClient(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("creating GCS client: %w", err)
-		}
-		return objectstore.NewGCS(client), nil
-	}
 }
 
 // connectStore builds the PostgreSQL-backed *atepg.Persistence. Startup fails if
