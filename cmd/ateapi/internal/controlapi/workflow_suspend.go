@@ -23,7 +23,6 @@ import (
 
 	"github.com/agent-substrate/substrate/cmd/ateapi/internal/store"
 	"github.com/agent-substrate/substrate/internal/ateattr"
-	"github.com/agent-substrate/substrate/internal/objectstore"
 	"github.com/agent-substrate/substrate/internal/proto/ateletpb"
 	"github.com/agent-substrate/substrate/internal/resources"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
@@ -456,7 +455,7 @@ func (w *ActorWorkflow) releaseReplacedSnapshot(ctx context.Context, actor *atea
 
 	previous := actor.GetStatus().GetExternalSnapshot().GetSnapshotUri()
 	switch {
-	case w.objectStore == nil:
+	case w.snapshotPlugin == nil:
 		markSkipped(ctx, "no object store configured")
 		return nil
 	case previous == "":
@@ -474,7 +473,7 @@ func (w *ActorWorkflow) releaseReplacedSnapshot(ctx context.Context, actor *atea
 		markSkipped(ctx, "the replaced external snapshot is owned by another resource")
 		return nil
 	}
-	return objectstore.DeletePrefix(ctx, w.objectStore, uri.Prefix())
+	return w.cleanupSnapshot(ctx, uri.Prefix())
 }
 
 func actorSnapshotOwner(actor *ateapipb.Actor) resources.SnapshotOwner {

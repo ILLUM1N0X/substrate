@@ -32,6 +32,7 @@ import (
 	"github.com/agent-substrate/substrate/internal/localjwtauthority"
 	"github.com/agent-substrate/substrate/internal/objectstore/objectstoretest"
 	"github.com/agent-substrate/substrate/internal/resources"
+	"github.com/agent-substrate/substrate/internal/snapshotplugin/objectstoreplugin"
 	"github.com/agent-substrate/substrate/internal/volume"
 	atev1alpha1 "github.com/agent-substrate/substrate/pkg/api/v1alpha1"
 	"github.com/agent-substrate/substrate/pkg/client/clientset/versioned"
@@ -222,7 +223,7 @@ func setupTestWithVolumePlugins(t *testing.T, ns string, plugins map[string]volu
 		instruments,
 		"",
 		volPlugins,
-		objectStore,
+		objectstoreplugin.ServerClient(objectStore),
 		testActorJWTIssuer,
 		actorJWTAuthorityPool,
 		actorCAPool,
