@@ -59,8 +59,6 @@ import (
 	"github.com/agent-substrate/substrate/pkg/client/informers/externalversions"
 	"github.com/agent-substrate/substrate/pkg/objectstorage"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/spf13/pflag"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -238,28 +236,9 @@ func main() {
 		serverboot.Fatal(ctx, "Failed to create anonymous GCS client", err)
 	}
 
-	var wrappedGCS objectstorage.ObjectStorage
-	storageBackend := os.Getenv("ATE_STORAGE_BACKEND")
-	switch storageBackend {
-	case "s3":
-		slog.InfoContext(ctx, "Using S3 storage backend")
-		// depend on standard AWS environment variables to configure the client
-		// these will need to be set on the atelet pods
-		cfg, err := config.LoadDefaultConfig(ctx)
-		if err != nil {
-			serverboot.Fatal(ctx, "Failed to load S3 config", err)
-		}
-		wrappedGCS = objectstorage.NewS3Client(s3.NewFromConfig(cfg, func(o *s3.Options) {
-			if usePathStyle := os.Getenv("AWS_S3_USE_PATH_STYLE"); usePathStyle == "true" {
-				o.UsePathStyle = true
-			}
-		}))
-	// GCS is currently the default, TODO: we assume workload identity / ADC
-	default:
-		wrappedGCS, err = objectstorage.NewGCSClient(ctx)
-		if err != nil {
-			serverboot.Fatal(ctx, "Failed to create GCS client", err)
-		}
+	wrappedGCS, err := objectstorage.NewFromEnv(ctx)
+	if err != nil {
+		serverboot.Fatal(ctx, "Failed to set up the object storage backend", err)
 	}
 
 	volPlugins := make(map[string]volume.VolumePluginWorkerPlane)
