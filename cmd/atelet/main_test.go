@@ -351,7 +351,7 @@ func TestUploadSnapshotRejectsSymlinkOutsideRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := &recordingObjectStorage{}
-	err = (&AteomHerder{gcsClient: store}).uploadSnapshot(context.Background(), uri, checkpointDir,
+	err = newPluginHerder(t, store).uploadSnapshot(context.Background(), uri, checkpointDir,
 		&sandboxAssetsRecord{SnapshotFiles: []string{"checkpoint.img"}}, "test", "test")
 	if err == nil {
 		t.Fatal("uploadSnapshot() followed a symlink outside the checkpoint directory")
@@ -383,7 +383,7 @@ func TestDownloadExternalCheckpointRejectsSymlinkOutsideRoot(t *testing.T) {
 	if err := objectstorage.SendLocalFileToGCSWithZstd(context.Background(), store, testSnapshotURI+"/checkpoint.img.zstd", payload); err != nil {
 		t.Fatal(err)
 	}
-	err := (&AteomHerder{gcsClient: store}).downloadExternalCheckpoint(
+	err := newPluginHerder(t, store).downloadExternalCheckpoint(
 		context.Background(), testSnapshotURI, restoreDir, []string{"checkpoint.img"})
 	if err == nil {
 		t.Fatal("downloadExternalCheckpoint() followed a symlink outside the restore directory")
@@ -1479,7 +1479,7 @@ func TestUploadLocalCheckpointDir(t *testing.T) {
 
 	t.Run("matching scope uploads all files", func(t *testing.T) {
 		store := &recordingObjectStorage{}
-		s := &AteomHerder{gcsClient: store}
+		s := newPluginHerder(t, store)
 		dir := filepath.Join(t.TempDir(), "pause-snap-1")
 		writeLocalSnapshot(t, dir, fullRec("microvm"), map[string]string{
 			"config.json": "cfg", "memory-ranges": "mem", "data.tar": "data",
@@ -1504,7 +1504,7 @@ func TestUploadLocalCheckpointDir(t *testing.T) {
 
 	t.Run("full capture uploads the reported data files alone as data", func(t *testing.T) {
 		store := &recordingObjectStorage{}
-		s := &AteomHerder{gcsClient: store}
+		s := newPluginHerder(t, store)
 		dir := filepath.Join(t.TempDir(), "pause-snap-1")
 		writeLocalSnapshot(t, dir, fullRec("microvm"), map[string]string{
 			"config.json": "cfg", "memory-ranges": "mem", "data.tar": "data",
@@ -1533,7 +1533,7 @@ func TestUploadLocalCheckpointDir(t *testing.T) {
 
 	t.Run("full capture listing no data files is rejected", func(t *testing.T) {
 		store := &recordingObjectStorage{}
-		s := &AteomHerder{gcsClient: store}
+		s := newPluginHerder(t, store)
 		dir := filepath.Join(t.TempDir(), "pause-snap-1")
 		rec := fullRec("microvm")
 		rec.DataSnapshotFiles = nil
@@ -1553,7 +1553,7 @@ func TestUploadLocalCheckpointDir(t *testing.T) {
 	})
 
 	t.Run("data capture cannot become full", func(t *testing.T) {
-		s := &AteomHerder{gcsClient: &recordingObjectStorage{}}
+		s := newPluginHerder(t, &recordingObjectStorage{})
 		dir := filepath.Join(t.TempDir(), "pause-snap-1")
 		writeLocalSnapshot(t, dir, sandboxAssetsRecord{
 			SandboxClass:  "microvm",
@@ -1570,7 +1570,7 @@ func TestUploadLocalCheckpointDir(t *testing.T) {
 
 	t.Run("manifest without scope is rejected", func(t *testing.T) {
 		store := &recordingObjectStorage{}
-		s := &AteomHerder{gcsClient: store}
+		s := newPluginHerder(t, store)
 		dir := filepath.Join(t.TempDir(), "pause-snap-1")
 		writeLocalSnapshot(t, dir, sandboxAssetsRecord{
 			SandboxClass:  "microvm",
@@ -1593,7 +1593,7 @@ func TestUploadLocalCheckpointDir(t *testing.T) {
 		store := &recordingObjectStorage{objects: map[string][]byte{
 			pausedSnapshotPath + "/manifest.json": []byte(`{"sandboxClass":"microvm"}`),
 		}}
-		s := &AteomHerder{gcsClient: store}
+		s := newPluginHerder(t, store)
 
 		if _, err := s.uploadLocalCheckpointDir(ctx, validUploadPausedCheckpointRequest(), filepath.Join(t.TempDir(), "never-created"), uri); err != nil {
 			t.Fatalf("uploadLocalCheckpointDir: %v", err)
@@ -1601,7 +1601,7 @@ func TestUploadLocalCheckpointDir(t *testing.T) {
 	})
 
 	t.Run("gone locally and remotely crashes the actor", func(t *testing.T) {
-		s := &AteomHerder{gcsClient: &recordingObjectStorage{}}
+		s := newPluginHerder(t, &recordingObjectStorage{})
 
 		_, err := s.uploadLocalCheckpointDir(ctx, validUploadPausedCheckpointRequest(), filepath.Join(t.TempDir(), "never-created"), uri)
 		if err == nil {
@@ -1613,7 +1613,7 @@ func TestUploadLocalCheckpointDir(t *testing.T) {
 	})
 
 	t.Run("upload failure returns the error", func(t *testing.T) {
-		s := &AteomHerder{gcsClient: &recordingObjectStorage{putErr: errors.New("boom")}}
+		s := newPluginHerder(t, &recordingObjectStorage{putErr: errors.New("boom")})
 		dir := filepath.Join(t.TempDir(), "pause-snap-1")
 		writeLocalSnapshot(t, dir, fullRec("microvm"), map[string]string{
 			"config.json": "cfg", "memory-ranges": "mem", "data.tar": "data",

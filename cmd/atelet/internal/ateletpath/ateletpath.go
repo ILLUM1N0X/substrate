@@ -29,6 +29,11 @@ var (
 	// directories are visible at the same path in atelet (which writes them)
 	// and in every ateom pod (which mounts them as overlay lowerdirs).
 	ImageCacheDir = filepath.Join(nodepath.BasePath, "image-cache")
+
+	// SnapshotScratchDir holds short-lived directories for snapshot manifests
+	// moved through the snapshot plugin. It lives under BasePath, which the
+	// node plugin shares with atelet.
+	SnapshotScratchDir = filepath.Join(nodepath.BasePath, "snapshot-scratch")
 )
 
 func RunSCBinaryPath(sha256 string) string {
