@@ -1929,6 +1929,7 @@ var Control_ServiceDesc = grpc.ServiceDesc{
 const (
 	WorkerService_RegisterWorker_FullMethodName            = "/ateapi.WorkerService/RegisterWorker"
 	WorkerService_MintAteomActorCertificate_FullMethodName = "/ateapi.WorkerService/MintAteomActorCertificate"
+	WorkerService_MintAteomActorJwt_FullMethodName         = "/ateapi.WorkerService/MintAteomActorJwt"
 	WorkerService_RequestActorSuspend_FullMethodName       = "/ateapi.WorkerService/RequestActorSuspend"
 	WorkerService_ReportActorSnapshotState_FullMethodName  = "/ateapi.WorkerService/ReportActorSnapshotState"
 )
@@ -1958,6 +1959,17 @@ type WorkerServiceClient interface {
 	//
 	// SPIFFE URI: spiffe://${trustdomain}/ateom-for-actor/${atespace}/${actor}
 	MintAteomActorCertificate(ctx context.Context, in *MintAteomActorCertificateRequest, opts ...grpc.CallOption) (*MintAteomActorCertificateResponse, error)
+	// MintAteomActorJwt creates a Substrate-issued JWT that asserts an ateom
+	// acting on behalf of a particular actor: the JWT counterpart of
+	// MintAteomActorCertificate. atelet calls it with its own client
+	// certificate and hands the JWT to node-side plugins, which exchange it for
+	// credentials scoped to that actor.
+	//
+	// The token speaks for the ateom, not the actor: its subject is
+	// `ateom-for-actor/<atespace>/<name>` and its claims sit under
+	// `ateom-for-actor.ate.dev`, see MintAteomActorJwtResponse. The lifetime is
+	// fixed at one hour.
+	MintAteomActorJwt(ctx context.Context, in *MintAteomActorJwtRequest, opts ...grpc.CallOption) (*MintAteomActorJwtResponse, error)
 	// RequestActorSuspend asks the control plane to suspend an Actor that the
 	// calling Worker hosts. Only the Worker can observe what makes an Actor
 	// worth reclaiming -- whether its workload still has anything to do -- and
@@ -2021,6 +2033,16 @@ func (c *workerServiceClient) MintAteomActorCertificate(ctx context.Context, in 
 	return out, nil
 }
 
+func (c *workerServiceClient) MintAteomActorJwt(ctx context.Context, in *MintAteomActorJwtRequest, opts ...grpc.CallOption) (*MintAteomActorJwtResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MintAteomActorJwtResponse)
+	err := c.cc.Invoke(ctx, WorkerService_MintAteomActorJwt_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *workerServiceClient) RequestActorSuspend(ctx context.Context, in *RequestActorSuspendRequest, opts ...grpc.CallOption) (*RequestActorSuspendResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RequestActorSuspendResponse)
@@ -2066,6 +2088,17 @@ type WorkerServiceServer interface {
 	//
 	// SPIFFE URI: spiffe://${trustdomain}/ateom-for-actor/${atespace}/${actor}
 	MintAteomActorCertificate(context.Context, *MintAteomActorCertificateRequest) (*MintAteomActorCertificateResponse, error)
+	// MintAteomActorJwt creates a Substrate-issued JWT that asserts an ateom
+	// acting on behalf of a particular actor: the JWT counterpart of
+	// MintAteomActorCertificate. atelet calls it with its own client
+	// certificate and hands the JWT to node-side plugins, which exchange it for
+	// credentials scoped to that actor.
+	//
+	// The token speaks for the ateom, not the actor: its subject is
+	// `ateom-for-actor/<atespace>/<name>` and its claims sit under
+	// `ateom-for-actor.ate.dev`, see MintAteomActorJwtResponse. The lifetime is
+	// fixed at one hour.
+	MintAteomActorJwt(context.Context, *MintAteomActorJwtRequest) (*MintAteomActorJwtResponse, error)
 	// RequestActorSuspend asks the control plane to suspend an Actor that the
 	// calling Worker hosts. Only the Worker can observe what makes an Actor
 	// worth reclaiming -- whether its workload still has anything to do -- and
@@ -2114,6 +2147,9 @@ func (UnimplementedWorkerServiceServer) RegisterWorker(context.Context, *Registe
 }
 func (UnimplementedWorkerServiceServer) MintAteomActorCertificate(context.Context, *MintAteomActorCertificateRequest) (*MintAteomActorCertificateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method MintAteomActorCertificate not implemented")
+}
+func (UnimplementedWorkerServiceServer) MintAteomActorJwt(context.Context, *MintAteomActorJwtRequest) (*MintAteomActorJwtResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method MintAteomActorJwt not implemented")
 }
 func (UnimplementedWorkerServiceServer) RequestActorSuspend(context.Context, *RequestActorSuspendRequest) (*RequestActorSuspendResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RequestActorSuspend not implemented")
@@ -2178,6 +2214,24 @@ func _WorkerService_MintAteomActorCertificate_Handler(srv interface{}, ctx conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WorkerService_MintAteomActorJwt_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MintAteomActorJwtRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServiceServer).MintAteomActorJwt(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerService_MintAteomActorJwt_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServiceServer).MintAteomActorJwt(ctx, req.(*MintAteomActorJwtRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WorkerService_RequestActorSuspend_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RequestActorSuspendRequest)
 	if err := dec(in); err != nil {
@@ -2228,6 +2282,10 @@ var WorkerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "MintAteomActorCertificate",
 			Handler:    _WorkerService_MintAteomActorCertificate_Handler,
+		},
+		{
+			MethodName: "MintAteomActorJwt",
+			Handler:    _WorkerService_MintAteomActorJwt_Handler,
 		},
 		{
 			MethodName: "RequestActorSuspend",

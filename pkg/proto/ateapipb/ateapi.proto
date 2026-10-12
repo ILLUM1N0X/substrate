@@ -1827,8 +1827,13 @@ message MintActorJwtResponse {
   // * exp, nbf, iat: Numeric Unix timestamps. nbf is five minutes before iat
   //   to allow for clock skew.
   // * jti: A random token ID.
-  // * `ate.dev`: A JSON object with the actor's `atespace`, `actorName`, and
-  //   `actorUID`.
+  // * `actor.ate.dev`: A JSON object with the actor's `atespace`,
+  //   `actorName`, and `actorUID`.
+  //
+  // The subject and claim name say the token speaks for the actor itself.
+  // A token minted for a Substrate component acting on the actor's behalf
+  // (WorkerService.MintAteomActorJwt) uses `ateom-for-actor` in both places
+  // instead, so a relying party can grant the two different access.
   string actor_jwt = 1 [ debug_redact = true ];
 
   // expire_time is when actor_jwt expires. Equal to its exp claim.
@@ -2419,6 +2424,18 @@ service WorkerService {
   // SPIFFE URI: spiffe://${trustdomain}/ateom-for-actor/${atespace}/${actor}
   rpc MintAteomActorCertificate(MintAteomActorCertificateRequest) returns (MintAteomActorCertificateResponse);
 
+  // MintAteomActorJwt creates a Substrate-issued JWT that asserts an ateom
+  // acting on behalf of a particular actor: the JWT counterpart of
+  // MintAteomActorCertificate. atelet calls it with its own client
+  // certificate and hands the JWT to node-side plugins, which exchange it for
+  // credentials scoped to that actor.
+  //
+  // The token speaks for the ateom, not the actor: its subject is
+  // `ateom-for-actor/<atespace>/<name>` and its claims sit under
+  // `ateom-for-actor.ate.dev`, see MintAteomActorJwtResponse. The lifetime is
+  // fixed at one hour.
+  rpc MintAteomActorJwt(MintAteomActorJwtRequest) returns (MintAteomActorJwtResponse);
+
   // RequestActorSuspend asks the control plane to suspend an Actor that the
   // calling Worker hosts. Only the Worker can observe what makes an Actor
   // worth reclaiming -- whether its workload still has anything to do -- and
@@ -2523,6 +2540,52 @@ message MintAteomActorCertificateResponse {
   // leaf certificate, and any remaining entries are intermediates in
   // leaf-to-root order.
   repeated bytes actor_certificates = 1;
+}
+
+// Request message for MintAteomActorJwt.
+message MintAteomActorJwtRequest {
+  // The actor for which the JWT should be issued.
+  //
+  // Must be a valid actor that currently exists according to the actor store.
+  //
+  // +k8s:required
+  // +k8s:subfield(atespace)=+k8s:required
+  ObjectRef actor = 1;
+
+  // The UID of the actor --- used to guard against deletion and recreation of
+  // an actor with the same name.
+  //
+  // +k8s:required
+  // +k8s:format=k8s-uuid
+  string actor_uid = 2;
+
+  // The audiences the minted JWT is bound to. Tokens are only issued with
+  // audience bindings, so at least one is required.
+  //
+  // +k8s:required
+  // +k8s:maxItems=16 # guardrail; tokens realistically bind a handful of audiences
+  // +k8s:listType=set
+  // +k8s:eachVal=+k8s:minLength=1
+  // +k8s:eachVal=+k8s:maxLength=512 # audiences are caller-defined URIs; bound only
+  repeated string audiences = 3;
+}
+
+// Response message for MintAteomActorJwt.
+message MintAteomActorJwtResponse {
+  // The signed JWT. Its claims are those described on
+  // MintActorJwtResponse.actor_jwt, except that it speaks for an ateom
+  // acting on behalf of the actor rather than for the actor itself:
+  //
+  // * sub: `ateom-for-actor/<atespace>/<name>`.
+  // * `ateom-for-actor.ate.dev`: A JSON object with the actor's `atespace`,
+  //   `actorName`, and `actorUID`.
+  //
+  // A relying party that trusts actor JWTs must not accept this token as the
+  // actor, and vice versa.
+  string actor_jwt = 1 [ debug_redact = true ];
+
+  // expire_time is when actor_jwt expires. Equal to its exp claim.
+  google.protobuf.Timestamp expire_time = 2;
 }
 
 message RequestActorSuspendRequest {
