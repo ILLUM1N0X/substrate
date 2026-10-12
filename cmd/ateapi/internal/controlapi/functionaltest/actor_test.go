@@ -5312,8 +5312,12 @@ func TestMintActorJWT_Success(t *testing.T) {
 	if want := "actor/" + testAtespace + "/id1"; claims.Subject != want {
 		t.Errorf("sub = %q, want %q", claims.Subject, want)
 	}
-	if want := createResp.GetMetadata().GetUid(); claims.Substrate.ActorUID != want {
-		t.Errorf("ate.dev.actorUID = %q, want the stored actor's %q", claims.Substrate.ActorUID, want)
+	kind, substrate, ok := claims.Substrate()
+	if !ok || kind != actoridjwt.KindActor {
+		t.Fatalf("token kind = %v (ok %v), want KindActor under actor.ate.dev", kind, ok)
+	}
+	if want := createResp.GetMetadata().GetUid(); substrate.ActorUID != want {
+		t.Errorf("actor.ate.dev.actorUID = %q, want the stored actor's %q", substrate.ActorUID, want)
 	}
 	assertActorJWTLifetime(t, mintResp, claims, 30*time.Minute)
 }
