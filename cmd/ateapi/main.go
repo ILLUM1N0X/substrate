@@ -641,7 +641,7 @@ func buildJWTProviders(ctx context.Context, cfg *apiauthn.AuthenticationConfig) 
 		if err != nil {
 			return apiauthn.ServerConfig{}, fmt.Errorf("initialize JWT provider %q: %w", providerCfg.Name, err)
 		}
-		verifier := oidcjwt.NewVerifier(providerCfg.Issuer, providerCfg.Audiences, httpClient)
+		verifier := oidcjwt.NewVerifier(providerCfg.Issuer, providerCfg.Audiences, oidcjwt.HTTPKeySource(providerCfg.Issuer, httpClient))
 		serverCfg.JWTProviders = append(serverCfg.JWTProviders, apiauthn.JWTProvider{
 			Name:   providerCfg.Name,
 			Issuer: providerCfg.Issuer,
