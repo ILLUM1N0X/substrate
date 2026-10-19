@@ -34,6 +34,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"go.ate.dev/substrate/internal/actoridjwt"
@@ -42,6 +43,7 @@ import (
 	"go.ate.dev/substrate/internal/localjwtauthority"
 	"go.ate.dev/substrate/internal/objectstoreplugin/exchange"
 	"go.ate.dev/substrate/internal/portforward"
+	"go.ate.dev/substrate/internal/preview"
 	exchangepb "go.ate.dev/substrate/internal/proto/objectstoreexchangepb"
 	"go.ate.dev/substrate/pkg/proto/ateapipb"
 )
@@ -367,6 +369,142 @@ func TestExchangeScopesTheTokenToTheActor(t *testing.T) {
 func ownPrefix(goldenURI string, actor *ateapipb.Actor) string {
 	location, _, _ := strings.Cut(goldenURI, "/atespaces/")
 	return location + "/atespaces/" + actor.GetMetadata().GetAtespace() + "/actors/" + actor.GetMetadata().GetUid()
+}
+
+// locationOf is the storage location a snapshot URI lives under, the part
+// before its owner's atespaces segment.
+func locationOf(snapshotURI string) string {
+	location, _, _ := strings.Cut(snapshotURI, "/atespaces/")
+	return location
+}
+
+// ownPrefixAt is ownPrefix for a location given directly, for a template
+// whose location differs from the golden's.
+func ownPrefixAt(location string, actor *ateapipb.Actor) string {
+	return strings.TrimSuffix(location, "/") + "/atespaces/" + actor.GetMetadata().GetAtespace() + "/actors/" + actor.GetMetadata().GetUid()
+}
+
+// TestRepointMovesTheGrant repoints an actor to a template whose snapshots
+// live under another location and checks the exchange follows. Grants come
+// from the URIs in the actor's status, so nothing names the new location
+// until the first suspend records a pending snapshot there: until then the
+// exchange keeps answering for the old location, the suspend's upload is the
+// first request the new location sees, and it goes through on the node
+// plugin's forced re-exchange. After it, an exchange without force mints for
+// the new location and the old token is good for nothing the actor owns.
+// Per-template locations are a preview feature, so the test needs the
+// install to enable the gate and the run to pass --preview.
+func TestRepointMovesTheGrant(t *testing.T) {
+	e2e.RequirePreview(t, preview.GatePerTemplateSnapshotLocation)
+	env, err := e2e.CheckEnv("BUCKET_NAME")
+	if err != nil {
+		t.Fatalf("CheckEnv failed: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+	clients := e2e.GetClients()
+	requireGCS(t, ctx, clients)
+
+	atespace, probe := e2e.DeployProbe(t, env["BUCKET_NAME"], "snapcreds-repoint")
+	sign := newSigner(t, ctx, clients)
+	xchg := dialExchange(t, ctx, clients)
+	stamp := time.Now().UTC().Format("20060102T150405Z")
+
+	// Template B is the probe template under another location in the same
+	// bucket. Its golden is not what the actor resumes from, but the actor's
+	// next snapshot goes under B's location.
+	const nameB = "probe-repoint"
+	locationB := "gs://" + env["BUCKET_NAME"] + "/ate-e2e-repoint-" + stamp + "/"
+	templateB := proto.Clone(probe).(*ateapipb.ActorTemplate)
+	templateB.Metadata = &ateapipb.ResourceMetadata{Atespace: atespace, Name: nameB}
+	templateB.Status = nil
+	templateB.SnapshotConfig = proto.Clone(probe.GetSnapshotConfig()).(*ateapipb.SnapshotConfig)
+	templateB.SnapshotConfig.StorageLocation = locationB
+	if _, err := clients.SubstrateAPI.CreateActorTemplate(ctx, &ateapipb.CreateActorTemplateRequest{ActorTemplate: templateB}); err != nil {
+		t.Fatalf("CreateActorTemplate %s: %v", nameB, err)
+	}
+	t.Cleanup(func() {
+		if _, err := clients.SubstrateAPI.DeleteActorTemplate(context.Background(), &ateapipb.DeleteActorTemplateRequest{ActorTemplate: &ateapipb.ObjectRef{Atespace: atespace, Name: nameB}}); err != nil {
+			t.Logf("cleanup: DeleteActorTemplate %s failed: %v", nameB, err)
+		}
+	})
+	e2e.WaitForSubstrateTemplateReady(ctx, t, clients, atespace, nameB)
+
+	// Running from template A, the token writes under A's location only.
+	const name = "creds-repoint"
+	actor := createAndResume(t, ctx, clients, atespace, name)
+	locationA := locationOf(durableURI(t, actor, ateapipb.SnapshotOwner_SNAPSHOT_OWNER_TAG))
+	first, err := xchg.ExchangeActorJwt(ctx, &exchangepb.ExchangeActorJwtRequest{ActorJwt: sign.jwt(t, forActor(actor))})
+	if err != nil {
+		t.Fatalf("exchange before the repoint: %v", err)
+	}
+	expectGCS(t, ctx, "old location write before the repoint", first.GetAccessToken(), http.MethodPut, ownPrefixAt(locationA, actor)+"/e2e-"+stamp, "a", http.StatusOK)
+	expectGCS(t, ctx, "old location delete before the repoint", first.GetAccessToken(), http.MethodDelete, ownPrefixAt(locationA, actor)+"/e2e-"+stamp, "", http.StatusNoContent)
+	expectGCS(t, ctx, "new location write before the repoint", first.GetAccessToken(), http.MethodPut, ownPrefixAt(locationB, actor)+"/e2e-"+stamp, "b", http.StatusForbidden)
+
+	// A repoint needs a suspended actor that owns no snapshot, so the actor
+	// is reverted to its golden rather than suspended.
+	ref := &ateapipb.ObjectRef{Atespace: atespace, Name: name}
+	if _, err := clients.SubstrateAPI.RevertActor(ctx, &ateapipb.RevertActorRequest{Actor: ref}); err != nil {
+		t.Fatalf("RevertActor %s: %v", name, err)
+	}
+	actor = waitForActorState(t, ctx, clients, atespace, name, ateapipb.ActorState_ACTOR_STATE_SUSPENDED)
+	actor.ActorTemplate = &ateapipb.ObjectRef{Atespace: atespace, Name: nameB}
+	if _, err := clients.SubstrateAPI.UpdateActor(ctx, &ateapipb.UpdateActorRequest{Actor: actor}); err != nil {
+		t.Fatalf("UpdateActor %s to template %s: %v", name, nameB, err)
+	}
+	if _, err := e2e.ResumeActorAwaitCapacity(t, ctx, clients, &ateapipb.ResumeActorRequest{Actor: ref}); err != nil {
+		t.Fatalf("ResumeActor %s after the repoint: %v", name, err)
+	}
+	actor = waitForActorState(t, ctx, clients, atespace, name, ateapipb.ActorState_ACTOR_STATE_RUNNING)
+
+	// The actor's status still names only A's location, so the exchange
+	// still grants A and not B, whatever it serves from its cache.
+	between, err := xchg.ExchangeActorJwt(ctx, &exchangepb.ExchangeActorJwtRequest{ActorJwt: sign.jwt(t, forActor(actor))})
+	if err != nil {
+		t.Fatalf("exchange after the repoint: %v", err)
+	}
+	expectGCS(t, ctx, "new location write after the repoint, before any snapshot there", between.GetAccessToken(), http.MethodPut, ownPrefixAt(locationB, actor)+"/e2e-"+stamp, "b", http.StatusForbidden)
+	expectGCS(t, ctx, "old location write after the repoint", between.GetAccessToken(), http.MethodPut, ownPrefixAt(locationA, actor)+"/e2e-"+stamp, "a", http.StatusOK)
+	expectGCS(t, ctx, "old location delete after the repoint", between.GetAccessToken(), http.MethodDelete, ownPrefixAt(locationA, actor)+"/e2e-"+stamp, "", http.StatusNoContent)
+
+	// The real path: the suspend records a pending snapshot under B, atelet
+	// asks the node plugin to upload there, GCS refuses the token the node
+	// cached for the resume, and one forced re-exchange, now granting B,
+	// carries the upload. The snapshot lands under B's location.
+	actor = suspendSync(t, ctx, clients, atespace, name)
+	snapshot := durableURI(t, actor, ateapipb.SnapshotOwner_SNAPSHOT_OWNER_ACTOR)
+	if !strings.HasPrefix(snapshot, ownPrefixAt(locationB, actor)) {
+		t.Fatalf("snapshot after the repoint is at %s, want it under %s", snapshot, ownPrefixAt(locationB, actor))
+	}
+
+	// A suspended actor is on no node, so the exchange answers for it only
+	// once it runs again. Now the status names B, so an exchange without
+	// force must not serve the old token, whose grants no longer cover the
+	// actor.
+	if _, err := e2e.ResumeActorAwaitCapacity(t, ctx, clients, &ateapipb.ResumeActorRequest{Actor: ref}); err != nil {
+		t.Fatalf("ResumeActor %s after the suspend: %v", name, err)
+	}
+	actor = waitForActorState(t, ctx, clients, atespace, name, ateapipb.ActorState_ACTOR_STATE_RUNNING)
+	after, err := xchg.ExchangeActorJwt(ctx, &exchangepb.ExchangeActorJwtRequest{ActorJwt: sign.jwt(t, forActor(actor))})
+	if err != nil {
+		t.Fatalf("exchange after the suspend: %v", err)
+	}
+	if after.GetAccessToken() == first.GetAccessToken() {
+		t.Error("the exchange served the old token after the suspend, its grants no longer cover the actor")
+	}
+	expectGCS(t, ctx, "snapshot read with the new token", after.GetAccessToken(), http.MethodGet, snapshot+"/manifest.json", "", http.StatusOK)
+	expectGCS(t, ctx, "snapshot read with the old token", first.GetAccessToken(), http.MethodGet, snapshot+"/manifest.json", "", http.StatusForbidden)
+
+	// The suspend pruned the actor's generation at A, so A is no longer
+	// granted. Only a forced exchange shows that: without force the exchange
+	// may serve any cached token that covers B, and the token minted for the
+	// upload, while both generations were in status, covers A as well.
+	fresh, err := xchg.ExchangeActorJwt(ctx, &exchangepb.ExchangeActorJwtRequest{ActorJwt: sign.jwt(t, forActor(actor)), Force: true})
+	if err != nil {
+		t.Fatalf("forced exchange after the suspend: %v", err)
+	}
+	expectGCS(t, ctx, "old location write after the suspend", fresh.GetAccessToken(), http.MethodPut, ownPrefixAt(locationA, actor)+"/e2e-"+stamp, "a", http.StatusForbidden)
 }
 
 func withAudience(c claims, audience string) claims { c.audience = audience; return c }
