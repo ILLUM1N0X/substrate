@@ -806,7 +806,7 @@ func TestRestorePrefersLocalAndFallsBackToObjectStorage(t *testing.T) {
 	}
 	remoteSrcDir := t.TempDir()
 	writeLocalSnapshot(t, remoteSrcDir, manifestRec, map[string]string{"checkpoint.img": "object-storage-memory"})
-	if err := s.uploadSnapshot(t.Context(), uri, remoteSrcDir, &manifestRec); err != nil {
+	if err := s.uploadSnapshot(t.Context(), testActor, uri, remoteSrcDir, &manifestRec); err != nil {
 		t.Fatalf("uploadSnapshot: %v", err)
 	}
 
@@ -944,7 +944,7 @@ func TestRestoreFailureRemovesStagedSnapshotFiles(t *testing.T) {
 	}
 	srcDir := t.TempDir()
 	writeLocalSnapshot(t, srcDir, manifestRec, map[string]string{"checkpoint.img": "shared-memory"})
-	if err := s.uploadSnapshot(t.Context(), uri, srcDir, &manifestRec); err != nil {
+	if err := s.uploadSnapshot(t.Context(), testActor, uri, srcDir, &manifestRec); err != nil {
 		t.Fatalf("uploadSnapshot: %v", err)
 	}
 	advertiseRuntime(t, s, sandboxRec)
