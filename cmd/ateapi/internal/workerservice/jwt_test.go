@@ -96,7 +96,7 @@ func TestMintWorkerActorJwt(t *testing.T) {
 	if !ok || kind != actoridjwt.KindWorkerForActor {
 		t.Fatalf("token kind = %v (ok %v), want KindWorkerForActor under worker-for-actor.ate.dev", kind, ok)
 	}
-	if got, want := *substrate, (actoridjwt.WireSubstrateClaims{Atespace: "team-a", ActorName: "my-actor", ActorUID: actor.GetMetadata().GetUid()}); got != want {
+	if got, want := *substrate, (actoridjwt.WireSubstrateClaims{Atespace: "team-a", ActorName: "my-actor", ActorUID: actor.GetMetadata().GetUid(), Node: "node-1"}); got != want {
 		t.Errorf("worker-for-actor.ate.dev = %+v, want %+v", got, want)
 	}
 

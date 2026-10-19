@@ -8268,7 +8268,9 @@ type MintWorkerActorJwtResponse struct {
 	//
 	// * sub: `worker-for-actor/<atespace>/<name>`.
 	// * `worker-for-actor.ate.dev`: A JSON object with the actor's `atespace`,
-	//   `actorName`, and `actorUID`.
+	//   `actorName`, and `actorUID`, and the `node` the token was minted for,
+	//   the one hosting the actor at that moment. A relying party refuses the
+	//   token once the actor has left that node.
 	//
 	// A relying party that trusts actor JWTs must not accept this token as the
 	// actor, and vice versa.
