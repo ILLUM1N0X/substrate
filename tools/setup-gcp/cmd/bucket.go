@@ -24,8 +24,10 @@ import (
 	"strings"
 
 	"cloud.google.com/go/iam"
+	"cloud.google.com/go/iam/apiv1/iampb"
 	"cloud.google.com/go/storage"
 	"github.com/spf13/cobra"
+	"google.golang.org/genproto/googleapis/type/expr"
 )
 
 func createSnapshotBucket(ctx context.Context, cfg *Config) error {
@@ -92,15 +94,39 @@ func createSnapshotBucket(ctx context.Context, cfg *Config) error {
 	return nil
 }
 
-// snapshotBucketRoles are the roles every Substrate component that touches the
-// snapshot bucket needs: objectAdmin to read, write and delete the objects a
-// snapshot is made of, and bucketViewer to resolve the bucket itself.
-var snapshotBucketRoles = []string{"roles/storage.objectAdmin", "roles/storage.bucketViewer"}
+// assetPrefix is where hack/install-microvm-deps.sh stages micro-VM sandbox
+// assets in the snapshot bucket. It sits outside every snapshot location.
+const assetPrefix = "kata-assets/"
 
-// snapshotBucketSubjects are the Kubernetes service accounts granted those
-// roles. atelet writes and reads external snapshots; ate-api-server copies
-// them for tags and deletes the ones nothing refers to any more.
-var snapshotBucketSubjects = []string{"atelet", "ate-api-server"}
+// bucketGrant is a role on the snapshot bucket for an ate-system Kubernetes
+// service account, limited to objects under prefix when prefix is set.
+type bucketGrant struct {
+	subject string
+	role    string
+	prefix  string
+}
+
+// snapshotBucketGrants are the roles setup-gcp grants on the snapshot bucket.
+// ate-api-server copies snapshots for tags and deletes the ones nothing refers
+// to. atelet's object-store plugin reads only micro-VM sandbox assets with its
+// own identity: on GCS every snapshot transfer runs on a token scoped to its
+// actor, issued by the credential exchange.
+var snapshotBucketGrants = []bucketGrant{
+	{subject: "ate-api-server", role: "roles/storage.objectAdmin"},
+	{subject: "ate-api-server", role: "roles/storage.bucketViewer"},
+	{subject: "atelet", role: "roles/storage.objectViewer", prefix: assetPrefix},
+}
+
+// condition limits g to objects under its prefix in bucket, or is nil.
+func (g bucketGrant) condition(bucket string) *expr.Expr {
+	if g.prefix == "" {
+		return nil
+	}
+	return &expr.Expr{
+		Title:      "objects under " + g.prefix,
+		Expression: fmt.Sprintf(`resource.name.startsWith("projects/_/buckets/%s/objects/%s")`, bucket, g.prefix),
+	}
+}
 
 func createIamPolicyBindings(ctx context.Context, cfg *Config) error {
 	client, err := storage.NewClient(ctx)
@@ -109,44 +135,52 @@ func createIamPolicyBindings(ctx context.Context, cfg *Config) error {
 	}
 	defer client.Close()
 
-	bucket := client.Bucket(cfg.BucketName)
-	policy, err := bucket.IAM().Policy(ctx)
+	// Version 3, since a policy holding a conditional binding cannot be read
+	// at version 1.
+	handle := client.Bucket(cfg.BucketName).IAM().V3()
+	policy, err := handle.Policy(ctx)
 	if err != nil {
 		return fmt.Errorf("get bucket iam policy: %w", err)
 	}
-
-	changed := false
-	for _, subject := range snapshotBucketSubjects {
-		member := fmt.Sprintf("principal://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s.svc.id.goog/subject/ns/ate-system/sa/%s", cfg.ProjectNumber, cfg.ProjectID, subject)
-		for _, role := range snapshotBucketRoles {
-			if hasUnconditionalBinding(policy, role, member) {
-				continue
-			}
-			slog.Info("Adding role to member", slog.String("bucket", cfg.BucketName), slog.String("role", role), slog.String("member", member))
-			policy.Add(member, iam.RoleName(role))
-			changed = true
-		}
-	}
+	changed := addBucketGrants(policy, cfg, snapshotBucketGrants)
 	if !changed {
 		slog.Info("IAM policy is already correct", slog.String("bucket", cfg.BucketName))
 		return nil
 	}
 
 	slog.Info("Setting IAM policy for bucket", slog.String("bucket", cfg.BucketName))
-	err = bucket.IAM().SetPolicy(ctx, policy)
-	if err != nil {
+	if err := handle.SetPolicy(ctx, policy); err != nil {
 		return fmt.Errorf("set bucket iam policy: %w", err)
 	}
-
 	return nil
 }
 
-// hasUnconditionalBinding reports whether the policy already grants role to
-// member without a condition. Conditional bindings are ignored: they may not
-// apply to the objects Substrate touches.
-func hasUnconditionalBinding(policy *iam.Policy, role, member string) bool {
-	for _, b := range policy.InternalProto.Bindings {
-		if b.Condition == nil && b.Role == role && slices.Contains(b.Members, member) {
+// addBucketGrants adds each grant the policy lacks and reports whether it
+// added any.
+func addBucketGrants(policy *iam.Policy3, cfg *Config, grants []bucketGrant) bool {
+	changed := false
+	for _, g := range grants {
+		member := fmt.Sprintf("principal://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s.svc.id.goog/subject/ns/ate-system/sa/%s", cfg.ProjectNumber, cfg.ProjectID, g.subject)
+		cond := g.condition(cfg.BucketName)
+		if hasBinding(policy.Bindings, g.role, member, cond) {
+			continue
+		}
+		slog.Info("Adding role to member", slog.String("bucket", cfg.BucketName), slog.String("role", g.role), slog.String("member", member), slog.String("condition", cond.GetExpression()))
+		policy.Bindings = append(policy.Bindings, &iampb.Binding{Role: g.role, Members: []string{member}, Condition: cond})
+		changed = true
+	}
+	return changed
+}
+
+// hasBinding reports whether bindings already grant role to member under the
+// same condition, or without one when cond is nil. A binding under another
+// condition does not count: it may not cover the objects Substrate touches.
+func hasBinding(bindings []*iampb.Binding, role, member string, cond *expr.Expr) bool {
+	for _, b := range bindings {
+		if b.Role != role || !slices.Contains(b.Members, member) {
+			continue
+		}
+		if b.Condition.GetExpression() == cond.GetExpression() {
 			return true
 		}
 	}

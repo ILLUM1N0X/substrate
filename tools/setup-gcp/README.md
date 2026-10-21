@@ -217,7 +217,7 @@ go run ./tools/setup-gcp create iam [flags]
 | `--bucket` | GCS bucket name. | `BUCKET_NAME` | None (Required for bucket bindings*) |
 | `--gke-nodes` | Grant GKE nodes permission to pull images. | - | `true` |
 | `--atelet` | Grant atelet project-level permissions. | - | `true` |
-| `--bucket-bindings` | Grant atelet and ate-api-server access to the snapshot bucket. | - | `true` |
+| `--bucket-bindings` | Grant ate-api-server access to the snapshot bucket, and atelet read access to the micro-VM assets in it. | - | `true` |
 
 *\*Note: Required for bucket bindings unless the `BUCKET_NAME` environment variable is set.*
 
@@ -243,8 +243,7 @@ cluster must have it enabled too, or their GCS calls fail with `401`).
 | :--- | :--- | :--- | :--- |
 | atelet WI principal¹ | `roles/storage.objectAdmin` | project² | Read/write actor snapshots in GCS |
 | atelet WI principal¹ | `roles/artifactregistry.reader` | project² | Pull sandbox runtime assets |
-| atelet WI principal¹ | `roles/storage.objectAdmin` | snapshot bucket | Read/write snapshot objects |
-| atelet WI principal¹ | `roles/storage.bucketViewer` | snapshot bucket | List/stat the snapshot bucket |
+| atelet WI principal¹ | `roles/storage.objectViewer` | snapshot bucket, objects under `kata-assets/` only | Read micro-VM sandbox assets. Snapshot transfers run on per-actor tokens from the credential exchange |
 | ate-api-server WI principal¹ | `roles/storage.objectAdmin` | snapshot bucket | Copy external snapshots for tags, delete the ones nothing refers to |
 | ate-api-server WI principal¹ | `roles/storage.bucketViewer` | snapshot bucket | List/stat the snapshot bucket |
 | default compute SA³ | `roles/storage.objectViewer` | project² | Nodes pull images from GCS-backed registries |
@@ -265,12 +264,13 @@ gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --member="${ATELET}" --role=roles/storage.objectAdmin
 gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --member="${ATELET}" --role=roles/artifactregistry.reader
-for MEMBER in "${ATELET}" "${ATE_API}"; do
-  gcloud storage buckets add-iam-policy-binding "gs://${BUCKET_NAME}" \
-    --member="${MEMBER}" --role=roles/storage.objectAdmin
-  gcloud storage buckets add-iam-policy-binding "gs://${BUCKET_NAME}" \
-    --member="${MEMBER}" --role=roles/storage.bucketViewer
-done
+gcloud storage buckets add-iam-policy-binding "gs://${BUCKET_NAME}" \
+  --member="${ATE_API}" --role=roles/storage.objectAdmin
+gcloud storage buckets add-iam-policy-binding "gs://${BUCKET_NAME}" \
+  --member="${ATE_API}" --role=roles/storage.bucketViewer
+gcloud storage buckets add-iam-policy-binding "gs://${BUCKET_NAME}" \
+  --member="${ATELET}" --role=roles/storage.objectViewer \
+  --condition="title=objects under kata-assets/,expression=resource.name.startsWith(\"projects/_/buckets/${BUCKET_NAME}/objects/kata-assets/\")"
 ```
 
 ### 5. Create Dashboards

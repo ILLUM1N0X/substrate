@@ -16,9 +16,14 @@ package cmd
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"testing"
 
+	"cloud.google.com/go/iam"
+	"cloud.google.com/go/iam/apiv1/iampb"
 	"cloud.google.com/go/resourcemanager/apiv3/resourcemanagerpb"
+	"google.golang.org/genproto/googleapis/type/expr"
 )
 
 func TestValidateBucketFlags(t *testing.T) {
@@ -80,6 +85,78 @@ func TestValidateBucketFlags(t *testing.T) {
 			}
 			if err.Error() != tt.want {
 				t.Errorf("validateBucketFlags() = %q; want %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
+func TestAddBucketGrants(t *testing.T) {
+	cfg := &Config{ProjectID: "proj", ProjectNumber: "123", BucketName: "snaps"}
+	member := func(sa string) string {
+		return "principal://iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/proj.svc.id.goog/subject/ns/ate-system/sa/" + sa
+	}
+	assets := &expr.Expr{Expression: `resource.name.startsWith("projects/_/buckets/snaps/objects/kata-assets/")`}
+
+	tests := []struct {
+		name     string
+		existing []*iampb.Binding
+		want     []string // role and member of each binding added, "role member [conditional]"
+	}{
+		{
+			name: "empty policy gets every grant, atelet only on the asset prefix",
+			want: []string{
+				"roles/storage.objectAdmin " + member("ate-api-server"),
+				"roles/storage.bucketViewer " + member("ate-api-server"),
+				"roles/storage.objectViewer " + member("atelet") + " conditional",
+			},
+		},
+		{
+			name: "grants already in place add nothing",
+			existing: []*iampb.Binding{
+				{Role: "roles/storage.objectAdmin", Members: []string{member("ate-api-server")}},
+				{Role: "roles/storage.bucketViewer", Members: []string{member("ate-api-server")}},
+				{Role: "roles/storage.objectViewer", Members: []string{member("atelet")}, Condition: assets},
+			},
+		},
+		{
+			name: "an unconditional atelet viewer does not stand in for the prefix grant",
+			existing: []*iampb.Binding{
+				{Role: "roles/storage.objectAdmin", Members: []string{member("ate-api-server")}},
+				{Role: "roles/storage.bucketViewer", Members: []string{member("ate-api-server")}},
+				{Role: "roles/storage.objectViewer", Members: []string{member("atelet")}},
+			},
+			want: []string{"roles/storage.objectViewer " + member("atelet") + " conditional"},
+		},
+		{
+			name: "a grant under another condition does not count",
+			existing: []*iampb.Binding{
+				{Role: "roles/storage.objectAdmin", Members: []string{member("ate-api-server")}, Condition: assets},
+				{Role: "roles/storage.bucketViewer", Members: []string{member("ate-api-server")}},
+				{Role: "roles/storage.objectViewer", Members: []string{member("atelet")}, Condition: assets},
+			},
+			want: []string{"roles/storage.objectAdmin " + member("ate-api-server")},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := &iam.Policy3{Bindings: slices.Clone(tc.existing)}
+			changed := addBucketGrants(policy, cfg, snapshotBucketGrants)
+			var got []string
+			for _, b := range policy.Bindings[len(tc.existing):] {
+				s := b.Role + " " + strings.Join(b.Members, ",")
+				if b.Condition != nil {
+					if b.Condition.Expression != assets.Expression {
+						t.Errorf("condition = %q, want %q", b.Condition.Expression, assets.Expression)
+					}
+					s += " conditional"
+				}
+				got = append(got, s)
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("added bindings:\n got  %q\n want %q", got, tc.want)
+			}
+			if changed != (len(tc.want) > 0) {
+				t.Errorf("changed = %v, want %v", changed, len(tc.want) > 0)
 			}
 		})
 	}

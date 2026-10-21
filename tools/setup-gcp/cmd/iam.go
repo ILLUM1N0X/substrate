@@ -182,5 +182,5 @@ func init() {
 	iamCmd.Flags().StringVar(&cfg.BucketName, "bucket", getEnv("BUCKET_NAME", ""), "GCS bucket name (required for bucket bindings) [env: BUCKET_NAME]")
 	iamCmd.Flags().Bool("gke-nodes", true, "Grant GKE nodes permission to pull images")
 	iamCmd.Flags().Bool("atelet", true, "Grant atelet project-level permissions")
-	iamCmd.Flags().Bool("bucket-bindings", true, "Grant atelet access to the snapshot bucket")
+	iamCmd.Flags().Bool("bucket-bindings", true, "Grant ate-api-server access to the snapshot bucket, and atelet read access to the micro-VM assets in it")
 }
