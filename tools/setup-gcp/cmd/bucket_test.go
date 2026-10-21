@@ -101,19 +101,35 @@ func TestValidateBucketFlags(t *testing.T) {
 	}
 }
 
-// TestAteletStorageAccess pins atelet's storage access to read on the asset
-// bucket.
-func TestAteletStorageAccess(t *testing.T) {
-	cfg := &Config{BucketName: "snaps"}
-	var got []bucketGrant
-	for _, g := range bucketGrants(cfg) {
-		if g.subject == "atelet" {
-			got = append(got, g)
+// TestBucketGrantsPerMember pins what each member may reach: atelet reads
+// the asset bucket only, and the transfer account, like ate-api-server, may
+// read and write the snapshot bucket only.
+func TestBucketGrantsPerMember(t *testing.T) {
+	cfg := &Config{ProjectID: "proj", ProjectNumber: "123", BucketName: "snaps", TransferGSAName: "ate-snapshot-transfer"}
+	grantsOf := func(member string) []bucketGrant {
+		var got []bucketGrant
+		for _, g := range bucketGrants(cfg) {
+			if g.member == member {
+				got = append(got, g)
+			}
 		}
+		return got
 	}
-	want := []bucketGrant{{bucket: "snaps-assets", subject: "atelet", role: "roles/storage.objectViewer"}}
-	if !slices.Equal(got, want) {
-		t.Errorf("atelet bucket grants = %v, want %v", got, want)
+	atelet := workloadIdentityPrincipal(cfg, "atelet")
+	transfer := "serviceAccount:ate-snapshot-transfer@proj.iam.gserviceaccount.com"
+	for _, tc := range []struct {
+		member string
+		want   []bucketGrant
+	}{
+		{atelet, []bucketGrant{{bucket: "snaps-assets", member: atelet, role: "roles/storage.objectViewer"}}},
+		{transfer, []bucketGrant{
+			{bucket: "snaps", member: transfer, role: "roles/storage.objectAdmin"},
+			{bucket: "snaps", member: transfer, role: "roles/storage.bucketViewer"},
+		}},
+	} {
+		if got := grantsOf(tc.member); !slices.Equal(got, tc.want) {
+			t.Errorf("grants for %s = %v, want %v", tc.member, got, tc.want)
+		}
 	}
 }
 

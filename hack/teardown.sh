@@ -41,12 +41,19 @@ require() {
 }
 
 # --- Helper Functions ---
+
+# transfer_service_account prints the snapshot transfer service account's
+# email, from SNAPSHOT_TRANSFER_GSA_NAME as setup-gcp and ate-setup build it.
+transfer_service_account() {
+  echo "${SNAPSHOT_TRANSFER_GSA_NAME:-ate-snapshot-transfer}@${PROJECT_ID}.iam.gserviceaccount.com"
+}
 function usage() {
   echo "Usage: $0 [options]"
   echo "Options:"
   echo "  --revoke-gke-node-permissions         Revoke GKE nodes permission to pull images"
   echo "  --revoke-atelet-permissions           Revoke atelet's project-level IAM bindings"
-  echo "  --delete-iam-policy-bindings          Delete bucket IAM policy bindings for atelet and ate-api-server"
+  echo "  --delete-iam-policy-bindings          Delete bucket IAM policy bindings for atelet, ate-api-server and the transfer account"
+  echo "  --delete-transfer-service-account     Delete the snapshot transfer service account"
   echo "  --delete-snapshot-bucket              Delete snapshot bucket"
   echo "  --delete-gvisor-node-pool             Delete gVisor node pool"
   echo "  --delete-cluster                      Delete GKE cluster"
@@ -127,10 +134,27 @@ delete_iam_policy_bindings() {
         --quiet || true
     done
   done
+  local transfer
+  transfer="serviceAccount:$(transfer_service_account)"
+  for role in roles/storage.objectAdmin roles/storage.bucketViewer; do
+    gcloud storage buckets remove-iam-policy-binding "gs://${BUCKET_NAME}" \
+      --member="${transfer}" \
+      --role="${role}" \
+      --quiet || true
+  done
   gcloud storage buckets remove-iam-policy-binding "gs://${asset_bucket}" \
     --member="${wi}/atelet" \
     --role=roles/storage.objectViewer \
     --quiet || true
+}
+
+# Delete the snapshot transfer service account. Deleting it drops the token
+# creator grants on it.
+delete_transfer_service_account() {
+  require PROJECT_ID
+  echo "Deleting the snapshot transfer service account..."
+  gcloud iam service-accounts delete "$(transfer_service_account)" \
+    --project="${PROJECT_ID}" --quiet || true
 }
 
 # Delete Snapshot Bucket (Reverse of create_snapshot_bucket)
@@ -175,6 +199,7 @@ while [[ "$#" -gt 0 ]]; do
     --revoke-gke-node-permissions) revoke_gke_node_permissions ;;
     --revoke-atelet-permissions) revoke_atelet_permissions ;;
     --delete-iam-policy-bindings) delete_iam_policy_bindings ;;
+    --delete-transfer-service-account) delete_transfer_service_account ;;
     --delete-snapshot-bucket) delete_snapshot_bucket ;;
     --delete-gvisor-node-pool) delete_gvisor_node_pool ;;
     --delete-cluster) delete_cluster ;;
@@ -182,6 +207,7 @@ while [[ "$#" -gt 0 ]]; do
     --all)
       delete_dashboards
       delete_iam_policy_bindings
+      delete_transfer_service_account
       revoke_atelet_permissions
       revoke_gke_node_permissions
       delete_snapshot_bucket

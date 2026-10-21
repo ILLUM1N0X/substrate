@@ -336,10 +336,12 @@ dedicated Google service account, so GCS audit logs name that account. Set
 its name with `SNAPSHOT_TRANSFER_GSA_NAME` (or ate-setup's
 `--snapshot-transfer-gsa-name`), and ate-setup builds its email in
 `gcp.projectID`. ate-setup refuses to deploy ate-api-server on GKE without
-one. The exchange impersonates
-the account, so ate-api-server's identity needs
-`roles/iam.serviceAccountTokenCreator` on it, and the account needs object
-admin on every snapshot bucket. kind does not use it.
+one. The exchange impersonates the account, so
+ate-api-server's identity needs `roles/iam.serviceAccountTokenCreator` on it,
+and the account needs object admin and bucket viewer on every snapshot bucket.
+`go run ./tools/setup-gcp create iam` creates it under that name,
+`ate-snapshot-transfer` by default, with both grants.
+kind does not use it.
 
 With `--kind`, ate-setup defaults `storage.snapshotLocation` to
 `gs://<storage.bucketName>/` (`gs://ate-snapshots/`, the bucket the in-cluster
@@ -361,8 +363,8 @@ shows, which also covers recreating a cluster with micro-VM workers.
 With the `PerTemplateSnapshotLocation` preview gate, an ActorTemplate may set
 `snapshotConfig.storageLocation` to store its snapshots elsewhere; templates
 that leave it empty use `--snapshot-location`. Grant ate-api-server's identity
-object admin and bucket viewer on any other bucket a template names, as
-setup-gcp does on the snapshot bucket. Without the gate,
+and the snapshot transfer service account object admin and bucket viewer on
+any other bucket a template names, as setup-gcp does on the snapshot bucket. Without the gate,
 ate-api-server ignores `snapshotConfig.storageLocation`. See
 [Snapshot Storage Layout](api-guide.md#snapshot-storage-layout).
 

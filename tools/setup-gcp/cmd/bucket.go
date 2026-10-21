@@ -23,6 +23,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"cloud.google.com/go/iam"
 	"cloud.google.com/go/storage"
@@ -102,25 +103,28 @@ func createBucket(ctx context.Context, cfg *Config, name string) error {
 	return nil
 }
 
-// bucketGrant is a role on a bucket for an ate-system Kubernetes service
-// account.
+// bucketGrant is a role on a bucket for an IAM member.
 type bucketGrant struct {
-	bucket  string
-	subject string
-	role    string
+	bucket string
+	member string
+	role   string
 }
 
 // bucketGrants are the roles setup-gcp grants on the two buckets.
 // ate-api-server copies snapshots for tags and deletes the ones nothing refers
-// to, so it gets objectAdmin, plus bucketViewer to resolve the bucket. atelet
-// reads only micro-VM sandbox assets with its own identity: on GCS every
-// snapshot transfer runs on a token scoped to its actor, issued by the
-// credential exchange.
+// to, so it gets objectAdmin, plus bucketViewer to resolve the bucket. The
+// transfer service account gets the same: the credential exchange downscopes
+// its token to each actor's prefixes for every snapshot transfer. atelet reads
+// only micro-VM sandbox assets with its own identity.
 func bucketGrants(cfg *Config) []bucketGrant {
+	apiServer := workloadIdentityPrincipal(cfg, "ate-api-server")
+	transfer := transferServiceAccountMember(cfg)
 	return []bucketGrant{
-		{bucket: cfg.BucketName, subject: "ate-api-server", role: "roles/storage.objectAdmin"},
-		{bucket: cfg.BucketName, subject: "ate-api-server", role: "roles/storage.bucketViewer"},
-		{bucket: cfg.assetBucketName(), subject: "atelet", role: "roles/storage.objectViewer"},
+		{bucket: cfg.BucketName, member: apiServer, role: "roles/storage.objectAdmin"},
+		{bucket: cfg.BucketName, member: apiServer, role: "roles/storage.bucketViewer"},
+		{bucket: cfg.BucketName, member: transfer, role: "roles/storage.objectAdmin"},
+		{bucket: cfg.BucketName, member: transfer, role: "roles/storage.bucketViewer"},
+		{bucket: cfg.assetBucketName(), member: workloadIdentityPrincipal(cfg, "atelet"), role: "roles/storage.objectViewer"},
 	}
 }
 
@@ -148,13 +152,34 @@ func createIamPolicyBindings(ctx context.Context, cfg *Config) error {
 
 	grants := bucketGrants(cfg)
 	for i, name := range names {
-		if !addGrants(policies[i], cfg, name, grants) {
-			slog.Info("IAM policy is already correct", slog.String("bucket", name))
-			continue
-		}
-		slog.Info("Setting IAM policy for bucket", slog.String("bucket", name))
-		if err := client.Bucket(name).IAM().SetPolicy(ctx, policies[i]); err != nil {
-			return fmt.Errorf("set bucket %s iam policy: %w", name, err)
+		handle := client.Bucket(name).IAM()
+		policy := policies[i]
+		// A service account created moments earlier can take a while to
+		// propagate, and granting to it too soon fails with "does not
+		// exist". Re-read the policy each attempt so etag conflicts also
+		// resolve, as grantCloudSQLProjectRoles does.
+		for attempt := 1; ; attempt++ {
+			if !addGrants(policy, cfg, name, grants) {
+				slog.Info("IAM policy is already correct", slog.String("bucket", name))
+				break
+			}
+			slog.Info("Setting IAM policy for bucket", slog.String("bucket", name))
+			err := handle.SetPolicy(ctx, policy)
+			if err == nil {
+				break
+			}
+			if attempt >= 6 {
+				return fmt.Errorf("set bucket %s iam policy: %w", name, err)
+			}
+			slog.Warn("Setting bucket IAM policy failed, retrying...", slog.String("bucket", name), slog.Int("attempt", attempt), slog.Any("err", err))
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(10 * time.Second):
+			}
+			if policy, err = handle.Policy(ctx); err != nil {
+				return fmt.Errorf("get bucket %s iam policy: %w", name, err)
+			}
 		}
 	}
 	return nil
@@ -168,12 +193,11 @@ func addGrants(policy *iam.Policy, cfg *Config, name string, grants []bucketGran
 		if g.bucket != name {
 			continue
 		}
-		member := fmt.Sprintf("principal://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s.svc.id.goog/subject/ns/ate-system/sa/%s", cfg.ProjectNumber, cfg.ProjectID, g.subject)
-		if hasUnconditionalBinding(policy, g.role, member) {
+		if hasUnconditionalBinding(policy, g.role, g.member) {
 			continue
 		}
-		slog.Info("Adding role to member", slog.String("bucket", name), slog.String("role", g.role), slog.String("member", member))
-		policy.Add(member, iam.RoleName(g.role))
+		slog.Info("Adding role to member", slog.String("bucket", name), slog.String("role", g.role), slog.String("member", g.member))
+		policy.Add(g.member, iam.RoleName(g.role))
 		changed = true
 	}
 	return changed
