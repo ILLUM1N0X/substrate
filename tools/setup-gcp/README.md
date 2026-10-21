@@ -224,9 +224,9 @@ go run ./tools/setup-gcp create iam [flags]
 #### What `create iam` actually grants
 
 On a fresh GCP project these bindings do not exist, and nothing else creates
-them — without them atelet cannot read or write external snapshots (`403` from
-GCS on the first suspend/resume), ate-api cannot copy or collect them, and
-nodes cannot pull images. `bootstrap` and `create iam` apply them for you; the
+them — without them atelet cannot fetch micro-VM assets, ate-api cannot copy,
+collect, or issue per-actor tokens for snapshots (`403` from GCS on the first
+suspend/resume), and nodes cannot pull images. `bootstrap` and `create iam` apply them for you; the
 table below is the reference for auditing them, or for applying them by hand in
 projects where you cannot run the tool with project-level IAM permissions.
 
@@ -241,7 +241,6 @@ cluster must have it enabled too, or their GCS calls fail with `401`).
 
 | Member | Role | Resource | Why |
 | :--- | :--- | :--- | :--- |
-| atelet WI principal¹ | `roles/storage.objectAdmin` | project² | Read/write actor snapshots in GCS |
 | atelet WI principal¹ | `roles/artifactregistry.reader` | project² | Pull sandbox runtime assets |
 | atelet WI principal¹ | `roles/storage.objectViewer` | snapshot bucket, objects under `kata-assets/` only | Read micro-VM sandbox assets. Snapshot transfers run on per-actor tokens from the credential exchange |
 | ate-api-server WI principal¹ | `roles/storage.objectAdmin` | snapshot bucket | Copy external snapshots for tags, delete the ones nothing refers to |
@@ -260,8 +259,6 @@ WI="principal://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/w
 ATELET="${WI}/atelet"
 ATE_API="${WI}/ate-api-server"
 
-gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-  --member="${ATELET}" --role=roles/storage.objectAdmin
 gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --member="${ATELET}" --role=roles/artifactregistry.reader
 gcloud storage buckets add-iam-policy-binding "gs://${BUCKET_NAME}" \

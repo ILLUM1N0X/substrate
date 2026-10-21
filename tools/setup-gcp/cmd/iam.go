@@ -108,13 +108,13 @@ func grantAteletPermissions(ctx context.Context, cfg *Config) error {
 
 	member := fmt.Sprintf("principal://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s.svc.id.goog/subject/ns/ate-system/sa/atelet", cfg.ProjectNumber, cfg.ProjectID)
 
-	// TODO: This shouldn't be a project-level binding.  We should grant atelet
-	// access only to the specific bucket and artifact registry repository in
-	// use.
-	changed1 := addProjectIamBinding(policy, "roles/storage.objectAdmin", member)
-	changed2 := addProjectIamBinding(policy, "roles/artifactregistry.reader", member)
+	// atelet gets no storage role here. On GCS every snapshot transfer runs on
+	// a token scoped to its actor, and the bucket bindings grant what it reads
+	// with its own identity, the micro-VM assets.
+	// TODO: grant artifactregistry.reader on the repository in use only.
+	changed := addProjectIamBinding(policy, "roles/artifactregistry.reader", member)
 
-	if !changed1 && !changed2 {
+	if !changed {
 		slog.Info("IAM policy already has required GKE node permissions. Skipping update.", slog.String("project", cfg.ProjectID))
 		return nil
 	}
