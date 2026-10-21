@@ -273,6 +273,12 @@ gcloud storage buckets add-iam-policy-binding "gs://${BUCKET_NAME}-assets" \
 
 #### Upgrading an existing install
 
+Substrate does not support upgrading a cluster in place yet. A cluster with
+micro-VM workers has to be recreated: each node indexes a sandbox runtime by
+the digests of its assets, which do not change when the assets move to the
+asset bucket, so a node keeps fetching them from the snapshot bucket. The
+commands below still apply when the new cluster reuses the GCP project.
+
 setup-gcp only adds bindings. An install set up before the asset bucket
 existed still grants atelet object admin on the project and on the snapshot
 bucket. Upgrade Substrate first, to a release whose node plugin gets snapshot
@@ -290,6 +296,15 @@ gcloud storage buckets remove-iam-policy-binding "gs://${BUCKET_NAME}" \
   --member="${ATELET}" --role=roles/storage.objectAdmin
 gcloud storage buckets remove-iam-policy-binding "gs://${BUCKET_NAME}" \
   --member="${ATELET}" --role=roles/storage.bucketViewer
+```
+
+An install from before the node service account lost its project-wide read
+access also still has that grant. Remove it too:
+
+```bash
+gcloud projects remove-iam-policy-binding "${PROJECT_ID}" \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role=roles/storage.objectViewer --condition=None
 ```
 
 ### 5. Create Dashboards

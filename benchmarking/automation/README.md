@@ -56,9 +56,10 @@ Each entry in `tests.yaml` may set `sandboxClass: gvisor | microvm` (default
 `gvisor`). This controls both `spec.sandboxClasses[0].name` on the benchmark WorkerPool
 and its `workerImage` (`ateworker-gvisor` vs `ateworker-microvm`).
 
-For `microvm` tests the target cluster must have KVM-capable nodes and the
-object store bucket named in its `.ate-dev-env.sh` must be writable by the
-orchestrator's Workload Identity principal.
+For `microvm` tests the target cluster must have KVM-capable nodes. The
+orchestrator uploads the micro-VM assets, so its Workload Identity principal
+must be able to write to the bucket they go to. On GKE that is
+`<BUCKET_NAME>-assets`, where `BUCKET_NAME` comes from `.ate-dev-env.sh`.
 
 ## Setup
 
