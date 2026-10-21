@@ -319,6 +319,7 @@ demos, the [benchmarks](../benchmarking/README.md#settings), and the
 | `rolloutTimeout`                             | `ATE_INSTALL_ROLLOUT_TIMEOUT`                   | `--rollout-timeout`                                | `1m0s`                | (global)                                 |
 | `storage.bucketName`                         | `BUCKET_NAME`                                   | `--storage-bucket-name`                            | —                     | (global)                                 |
 | `storage.snapshotLocation`                   | `SNAPSHOT_LOCATION`                             | `--snapshot-location`                              | —                     | (global)                                 |
+| `storage.transferGSAName`                    | `SNAPSHOT_TRANSFER_GSA_NAME`                    | `--snapshot-transfer-gsa-name`                     | —                     | (global)                                 |
 
 ## Snapshot storage
 
@@ -329,6 +330,16 @@ no default, and ate-setup fails before deploying without it unless the
 `PerTemplateSnapshotLocation` preview gate is enabled. If you deploy ate-api-server
 some other way, pass the flag yourself; without the gate, the server refuses to
 start without it.
+
+On GCS, ate-api-server's credential exchange runs snapshot transfers as a
+dedicated Google service account, so GCS audit logs name that account. Set
+its name with `SNAPSHOT_TRANSFER_GSA_NAME` (or ate-setup's
+`--snapshot-transfer-gsa-name`), and ate-setup builds its email in
+`gcp.projectID`. ate-setup refuses to deploy ate-api-server on GKE without
+one. The exchange impersonates
+the account, so ate-api-server's identity needs
+`roles/iam.serviceAccountTokenCreator` on it, and the account needs object
+admin on every snapshot bucket. kind does not use it.
 
 With `--kind`, ate-setup defaults `storage.snapshotLocation` to
 `gs://<storage.bucketName>/` (`gs://ate-snapshots/`, the bucket the in-cluster

@@ -234,6 +234,7 @@ func buildConfig(root string, env map[string]string, r *Resolved) (*Config, erro
 
 		BucketName:         r.String("storage.bucketName"),
 		SnapshotLocation:   r.String("storage.snapshotLocation"),
+		TransferGSAName:    r.String("storage.transferGSAName"),
 		KODockerRepo:       r.String("ko.dockerRepo"),
 		KODefaultPlatforms: r.String("ko.defaultPlatforms"),
 		ActorJWTAlgorithm:  r.String("actorJWT.algorithm"),

@@ -68,8 +68,12 @@ func (e *Env) DeployAteSystem(ctx context.Context, opts DeployOptions) error {
 	if err != nil {
 		return err
 	}
-	// Likewise a router that would refuse to start without an allowlist.
+	// Likewise a router that would refuse to start without an allowlist, and
+	// a credential exchange without a transfer service account.
 	if err := e.Cfg.RequireIngressAllowedSPIFFEIDs(); err != nil {
+		return err
+	}
+	if err := e.Cfg.RequireTransferServiceAccount(); err != nil {
 		return err
 	}
 	// Likewise the CSI request, even though it is only acted on partway
