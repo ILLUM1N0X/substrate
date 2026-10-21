@@ -69,10 +69,9 @@ func grantGkeNodePermissions(ctx context.Context, cfg *Config) error {
 	member := fmt.Sprintf("serviceAccount:%s-compute@developer.gserviceaccount.com", cfg.ProjectNumber)
 
 	// TODO: Don't grant these permissions at project level.
-	changed1 := addProjectIamBinding(policy, "roles/storage.objectViewer", member)
-	changed2 := addProjectIamBinding(policy, "roles/artifactregistry.reader", member)
+	changed := addProjectIamBinding(policy, "roles/artifactregistry.reader", member)
 
-	if !changed1 && !changed2 {
+	if !changed {
 		slog.Info("IAM policy already has required GKE node permissions. Skipping update.", slog.String("project", cfg.ProjectID))
 		return nil
 	}
