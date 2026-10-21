@@ -11,7 +11,7 @@ It uses a hierarchical command structure:
     *   `enable apis` - Enable required GCP APIs.
     *   `create` - Parent command for resource creation.
         *   `cluster` - Create GKE cluster.
-        *   `bucket` - Create GCS bucket.
+        *   `bucket` - Create the GCS snapshot and asset buckets.
         *   `iam` - Create IAM policy bindings and grant permissions.
         *   `dashboards` - Create Cloud Monitoring dashboards.
         *   `cloudsql` - Create a Cloud SQL PostgreSQL instance for the ateapi store, with IAM database authentication (see [cloud-sql.md](cloud-sql.md)).
@@ -190,7 +190,8 @@ one of the options below.
 
 ### 3. Create Bucket
 
-Creates a GCS bucket for storing snapshots.
+Creates the GCS bucket for snapshots and the asset bucket, `NAME-assets`, for
+micro-VM sandbox assets.
 
 ```bash
 go run ./tools/setup-gcp create bucket [flags]
@@ -199,7 +200,7 @@ go run ./tools/setup-gcp create bucket [flags]
 **Flags:**
 | Flag | Description | Default Env Var | Fallback Default |
 | :--- | :--- | :--- | :--- |
-| `--name` | Name of the GCS bucket. | `BUCKET_NAME` | None (Required*) |
+| `--name` | Name of the GCS snapshot bucket. The micro-VM asset bucket is created beside it as `NAME-assets`. | `BUCKET_NAME` | None (Required*) |
 
 *\*Note: Required unless the `BUCKET_NAME` environment variable is set.*
 
@@ -217,18 +218,19 @@ go run ./tools/setup-gcp create iam [flags]
 | `--bucket` | GCS bucket name. | `BUCKET_NAME` | None (Required for bucket bindings*) |
 | `--gke-nodes` | Grant GKE nodes permission to pull images. | - | `true` |
 | `--atelet` | Grant atelet project-level permissions. | - | `true` |
-| `--bucket-bindings` | Grant atelet and ate-api-server access to the snapshot bucket. | - | `true` |
+| `--bucket-bindings` | Grant ate-api-server access to the snapshot bucket, and atelet read access to the asset bucket. | - | `true` |
 
 *\*Note: Required for bucket bindings unless the `BUCKET_NAME` environment variable is set.*
 
 #### What `create iam` actually grants
 
 On a fresh GCP project these bindings do not exist, and nothing else creates
-them — without them atelet cannot read or write external snapshots (`403` from
-GCS on the first suspend/resume), ate-api cannot copy or collect them, and
-nodes cannot pull images. `bootstrap` and `create iam` apply them for you; the
-table below is the reference for auditing them, or for applying them by hand in
-projects where you cannot run the tool with project-level IAM permissions.
+them. Without them atelet cannot fetch micro-VM assets, ate-api cannot copy,
+collect, or issue per-actor tokens for snapshots (`403` from GCS on the first
+suspend/resume), and nodes cannot pull images. `bootstrap` and `create iam`
+apply them for you. The table below is the reference for auditing them, or for
+applying them by hand in projects where you cannot run the tool with
+project-level IAM permissions.
 
 atelet and ate-api authenticate via [GKE Workload Identity
 Federation](https://cloud.google.com/kubernetes-engine/docs/how-to/workload-identity):
@@ -241,12 +243,10 @@ cluster must have it enabled too, or their GCS calls fail with `401`).
 
 | Member | Role | Resource | Why |
 | :--- | :--- | :--- | :--- |
-| atelet WI principal¹ | `roles/storage.objectAdmin` | project² | Read/write actor snapshots in GCS |
 | atelet WI principal¹ | `roles/artifactregistry.reader` | project² | Pull sandbox runtime assets |
-| atelet WI principal¹ | `roles/storage.objectAdmin` | snapshot bucket | Read/write snapshot objects |
-| atelet WI principal¹ | `roles/storage.bucketViewer` | snapshot bucket | List/stat the snapshot bucket |
 | ate-api-server WI principal¹ | `roles/storage.objectAdmin` | snapshot bucket | Copy external snapshots for tags, delete the ones nothing refers to |
 | ate-api-server WI principal¹ | `roles/storage.bucketViewer` | snapshot bucket | List/stat the snapshot bucket |
+| atelet WI principal¹ | `roles/storage.objectViewer` | asset bucket (`BUCKET_NAME-assets`) | Read micro-VM sandbox assets |
 | default compute SA³ | `roles/artifactregistry.reader` | project² | Nodes pull images from Artifact Registry, which also serves gcr.io |
 
 ¹ `principal://iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/PROJECT_ID.svc.id.goog/subject/ns/ate-system/sa/SERVICE_ACCOUNT` — note it is keyed to the **project number**, not the ID.
@@ -262,15 +262,34 @@ ATELET="${WI}/atelet"
 ATE_API="${WI}/ate-api-server"
 
 gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-  --member="${ATELET}" --role=roles/storage.objectAdmin
-gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --member="${ATELET}" --role=roles/artifactregistry.reader
-for MEMBER in "${ATELET}" "${ATE_API}"; do
-  gcloud storage buckets add-iam-policy-binding "gs://${BUCKET_NAME}" \
-    --member="${MEMBER}" --role=roles/storage.objectAdmin
-  gcloud storage buckets add-iam-policy-binding "gs://${BUCKET_NAME}" \
-    --member="${MEMBER}" --role=roles/storage.bucketViewer
-done
+gcloud storage buckets add-iam-policy-binding "gs://${BUCKET_NAME}" \
+  --member="${ATE_API}" --role=roles/storage.objectAdmin
+gcloud storage buckets add-iam-policy-binding "gs://${BUCKET_NAME}" \
+  --member="${ATE_API}" --role=roles/storage.bucketViewer
+gcloud storage buckets add-iam-policy-binding "gs://${BUCKET_NAME}-assets" \
+  --member="${ATELET}" --role=roles/storage.objectViewer
+```
+
+#### Upgrading an existing install
+
+setup-gcp only adds bindings. An install set up before the asset bucket
+existed still grants atelet object admin on the project and on the snapshot
+bucket. Upgrade Substrate first, to a release whose node plugin gets snapshot
+credentials from ate-api-server's credential exchange. On an older release,
+removing these grants makes every suspend and resume fail with `403`. Remove
+those grants after running `create bucket` and `create iam`, and after
+rerunning `hack/install-microvm-deps.sh --install` if you use micro-VM
+workers, so the assets are in the asset bucket. `ATELET` is set as in the
+manual equivalent above:
+
+```bash
+gcloud projects remove-iam-policy-binding "${PROJECT_ID}" \
+  --member="${ATELET}" --role=roles/storage.objectAdmin --condition=None
+gcloud storage buckets remove-iam-policy-binding "gs://${BUCKET_NAME}" \
+  --member="${ATELET}" --role=roles/storage.objectAdmin
+gcloud storage buckets remove-iam-policy-binding "gs://${BUCKET_NAME}" \
+  --member="${ATELET}" --role=roles/storage.bucketViewer
 ```
 
 ### 5. Create Dashboards

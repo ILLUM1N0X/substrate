@@ -34,6 +34,9 @@ var bootstrapCmd = &cobra.Command{
 		if cfg.BucketName == "" {
 			return errors.New("--bucket-name is required")
 		}
+		if err := checkAssetBucketName(&cfg); err != nil {
+			return err
+		}
 
 		slog.Info("Starting full bootstrap...")
 
@@ -47,8 +50,8 @@ var bootstrapCmd = &cobra.Command{
 			return err
 		}
 
-		slog.Info("Step 3/7: Creating GCS Bucket for snapshots...")
-		if err := createSnapshotBucket(ctx, &cfg); err != nil {
+		slog.Info("Step 3/7: Creating GCS buckets for snapshots and micro-VM assets...")
+		if err := createBuckets(ctx, &cfg); err != nil {
 			return err
 		}
 
@@ -62,7 +65,7 @@ var bootstrapCmd = &cobra.Command{
 			return err
 		}
 
-		slog.Info("Step 6/7: Creating IAM policy bindings for bucket...")
+		slog.Info("Step 6/7: Creating IAM policy bindings for the buckets...")
 		if err := createIamPolicyBindings(ctx, &cfg); err != nil {
 			return err
 		}

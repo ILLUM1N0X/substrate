@@ -117,6 +117,7 @@ delete_iam_policy_bindings() {
   require PROJECT_ID PROJECT_NUMBER BUCKET_NAME
   echo "Deleting IAM policy bindings for bucket..."
   local wi="principal://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${PROJECT_ID}.svc.id.goog/subject/ns/ate-system/sa"
+  local asset_bucket="${BUCKET_NAME}-assets"
   local subject role
   for subject in atelet ate-api-server; do
     for role in roles/storage.objectAdmin roles/storage.bucketViewer; do
@@ -126,14 +127,21 @@ delete_iam_policy_bindings() {
         --quiet || true
     done
   done
+  gcloud storage buckets remove-iam-policy-binding "gs://${asset_bucket}" \
+    --member="${wi}/atelet" \
+    --role=roles/storage.objectViewer \
+    --quiet || true
 }
 
 # Delete Snapshot Bucket (Reverse of create_snapshot_bucket)
 delete_snapshot_bucket() {
   require PROJECT_ID BUCKET_NAME
-  echo "Deleting snapshot bucket..."
-  gcloud storage rm --recursive "gs://${BUCKET_NAME}/**" --project="${PROJECT_ID}" --quiet || true
-  gcloud storage buckets delete "gs://${BUCKET_NAME}" --project="${PROJECT_ID}" --quiet || true
+  echo "Deleting snapshot and asset buckets..."
+  local bucket asset_bucket="${BUCKET_NAME}-assets"
+  for bucket in "${BUCKET_NAME}" "${asset_bucket}"; do
+    gcloud storage rm --recursive "gs://${bucket}/**" --project="${PROJECT_ID}" --quiet || true
+    gcloud storage buckets delete "gs://${bucket}" --project="${PROJECT_ID}" --quiet || true
+  done
 }
 
 # Delete gVisor Node Pool (Reverse of create_gvisor_node_pool)

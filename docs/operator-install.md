@@ -338,9 +338,21 @@ does not create the bucket or grant access to it: run
 `go run ./tools/setup-gcp create iam` first, or `bootstrap` for both (see
 [tools/setup-gcp](../tools/setup-gcp/README.md)).
 
+setup-gcp also creates an asset bucket, `<BUCKET_NAME>-assets`, where
+`hack/install-microvm-deps.sh` stages micro-VM sandbox assets, and gives atelet
+read access to it. atelet gets no access to the snapshot bucket: every snapshot
+transfer runs on a token scoped to its actor, issued by ate-api-server's
+credential exchange. An install set up before the asset bucket existed keeps
+atelet's old grants, since setup-gcp only adds bindings. After upgrading
+Substrate, remove them as
+[tools/setup-gcp](../tools/setup-gcp/README.md#upgrading-an-existing-install)
+shows.
+
 With the `PerTemplateSnapshotLocation` preview gate, an ActorTemplate may set
 `snapshotConfig.storageLocation` to store its snapshots elsewhere; templates
-that leave it empty use `--snapshot-location`. Without the gate,
+that leave it empty use `--snapshot-location`. Grant ate-api-server's identity
+object admin and bucket viewer on any other bucket a template names, as
+setup-gcp does on the snapshot bucket. Without the gate,
 ate-api-server ignores `snapshotConfig.storageLocation`. See
 [Snapshot Storage Layout](api-guide.md#snapshot-storage-layout).
 
