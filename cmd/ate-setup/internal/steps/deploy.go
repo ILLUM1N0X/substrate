@@ -301,6 +301,9 @@ func (e *Env) DeployAteAPIServer(ctx context.Context) error {
 	if _, err := clusterSnapshotLocation(e.Cfg.SnapshotLocation, e.Cfg.PreviewGates); err != nil {
 		return err
 	}
+	if err := e.Cfg.RequireTransferServiceAccount(); err != nil {
+		return err
+	}
 	if err := e.EnsureCRDs(ctx); err != nil {
 		return err
 	}

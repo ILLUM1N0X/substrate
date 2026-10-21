@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"time"
 
 	"github.com/spf13/cobra"
 	iam "google.golang.org/api/iam/v1"
@@ -72,6 +73,29 @@ func setupTransferServiceAccount(ctx context.Context, cfg *Config, members ...st
 		return fmt.Errorf("get service account %s: %w", email, err)
 	}
 
+	// A service account created moments earlier, this one or a member, can
+	// take a while to propagate, and granting too soon fails with "does not
+	// exist". Re-read the policy each attempt so etag conflicts also resolve,
+	// as grantCloudSQLProjectRoles does.
+	for attempt := 1; ; attempt++ {
+		err := grantTokenCreator(ctx, svc, resource, email, members)
+		if err == nil {
+			return nil
+		}
+		if attempt >= 6 {
+			return err
+		}
+		slog.Warn("Granting token creator failed, retrying...", slog.String("gsa", email), slog.Int("attempt", attempt), slog.Any("err", err))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Second):
+		}
+	}
+}
+
+// grantTokenCreator grants members token creator on the service account.
+func grantTokenCreator(ctx context.Context, svc *iam.Service, resource, email string, members []string) error {
 	policy, err := svc.Projects.ServiceAccounts.GetIamPolicy(resource).Context(ctx).Do()
 	if err != nil {
 		return fmt.Errorf("get service account %s iam policy: %w", email, err)

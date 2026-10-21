@@ -80,8 +80,9 @@ func (f *fallbackSource) Token() (*oauth2.Token, error) {
 	tok, err := f.src.Token()
 	if err != nil {
 		// Valid would apply the 40 minute margin the reuse source sets on its
-		// tokens, so check the expiry itself.
-		if last := f.last.Load(); last != nil && time.Now().Before(last.Expiry) {
+		// tokens, so check the expiry itself. The token must outlast the STS
+		// call it is downscoped with.
+		if last := f.last.Load(); last != nil && time.Until(last.Expiry) > stsTimeout {
 			return last, nil
 		}
 		return nil, err

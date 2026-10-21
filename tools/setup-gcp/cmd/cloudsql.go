@@ -430,14 +430,12 @@ var cloudsqlCmd = &cobra.Command{
 		if err := createCloudSQLGSA(ctx, &cfg); err != nil {
 			return err
 		}
-		if err := grantCloudSQLProjectRoles(ctx, &cfg); err != nil {
-			return err
-		}
 		// ate-api-server's pod runs as this account once Cloud SQL is on, so
 		// its credential exchange creates transfer account tokens with it.
-		// This runs after grantCloudSQLProjectRoles, whose retries wait for
-		// the new account to propagate.
 		if err := setupTransferServiceAccount(ctx, &cfg, "serviceAccount:"+cloudSQLGSAEmail(&cfg)); err != nil {
+			return err
+		}
+		if err := grantCloudSQLProjectRoles(ctx, &cfg); err != nil {
 			return err
 		}
 		if err := createCloudSQLIAMUser(ctx, svc, &cfg); err != nil {

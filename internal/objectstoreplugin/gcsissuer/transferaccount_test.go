@@ -128,6 +128,7 @@ func TestTransferAccountSource_KeepsTheLastTokenWhenAFetchFails(t *testing.T) {
 		wantErr bool
 	}{
 		{"an unexpired token is returned", 39 * time.Minute, false},
+		{"a token that would expire during the STS call is not", 20 * time.Second, true},
 		{"an expired token is not", -time.Minute, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

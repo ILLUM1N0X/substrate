@@ -347,21 +347,27 @@ func TestRequireTransferServiceAccount(t *testing.T) {
 
 func TestLoadTransferServiceAccount(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		env  map[string]string
-		want string
+		name     string
+		opts     Options
+		env      map[string]string
+		wantName string
+		want     string
 	}{
-		{name: "built from the name and the project", env: map[string]string{"SNAPSHOT_TRANSFER_GSA_NAME": "xfer", "PROJECT_ID": "proj"}, want: "xfer@proj.iam.gserviceaccount.com"},
-		{name: "no default name", env: map[string]string{"PROJECT_ID": "proj"}, want: ""},
+		{name: "built from the name and the project", env: map[string]string{"SNAPSHOT_TRANSFER_GSA_NAME": "xfer", "PROJECT_ID": "proj"}, wantName: "xfer", want: "xfer@proj.iam.gserviceaccount.com"},
+		{name: "no default name", env: map[string]string{"PROJECT_ID": "proj"}},
+		{name: "kind ignores the environment", opts: Options{Kind: true}, env: map[string]string{"SNAPSHOT_TRANSFER_GSA_NAME": "xfer", "PROJECT_ID": "proj"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			loadEnv(t)
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
-			cfg, err := Load(Options{})
+			cfg, err := Load(tc.opts)
 			if err != nil {
 				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.TransferGSAName != tc.wantName {
+				t.Errorf("TransferGSAName = %q, want %q", cfg.TransferGSAName, tc.wantName)
 			}
 			if got := cfg.TransferServiceAccount(); got != tc.want {
 				t.Errorf("TransferServiceAccount() = %q, want %q", got, tc.want)
